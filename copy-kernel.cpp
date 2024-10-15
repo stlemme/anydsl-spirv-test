@@ -9,18 +9,19 @@ int main(int argc, const char* argv) {
 	int32_t dev = ANYDSL_DEVICE(ANYDSL_LEVELZERO, 0);
 
 	uint32_t n = 8192;
+	uint32_t s = n * sizeof(uint32_t);
 
-	void* p0 = anydsl_alloc_host(dev, n);
-	void* p1 = anydsl_alloc(dev, n);
-	void* p2 = anydsl_alloc_unified(dev, n);
-	void* p3 = anydsl_alloc(dev, n);
+	void* p0 = anydsl_alloc_host(dev, s);
+	void* p1 = anydsl_alloc(dev, s);
+	void* p2 = anydsl_alloc_unified(dev, s);
+	void* p3 = anydsl_alloc(dev, s);
 
 	uint32_t* p = static_cast<uint32_t*>(p0);
 	for (uint32_t i = 0; i < n; ++i) {
 		p[i] = i;
 	}
 
-	anydsl_copy(dev, p0, 0, dev, p1, 0, n);
+	anydsl_copy(dev, p0, 0, dev, p1, 0, s);
 
 	const char filename[] = KERNEL_PATH "/spv_kernels.spv";
 	const char kernelname[] = "copy_krnl";
@@ -39,7 +40,7 @@ int main(int argc, const char* argv) {
 
 	anydsl_launch_kernel(dev, filename, kernelname, grid, block, arg_data, arg_sizes, arg_aligns, arg_alloc_sizes, arg_types, num_args);
 
-	anydsl_copy(dev, p3, 0, dev, p0, 0, n);
+	anydsl_copy(dev, p3, 0, dev, p0, 0, s);
 
 	for (uint32_t i = 0; i < 256; ++i) {
 		std::cout << i << ": " << p[i] << std::endl;
