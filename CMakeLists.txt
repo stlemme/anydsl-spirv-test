@@ -17,16 +17,15 @@ add_executable(spirv-copy copy.cpp)
 target_include_directories(spirv-copy PRIVATE ${AnyDSL_runtime_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(spirv-copy PRIVATE runtime)
 
+find_program(Clang_BIN NAMES clang clang-16 PATHS ${LLVM_BINARY_DIR} PATH_SUFFIXES ${CMAKE_CONFIGURATION_TYPES})
+find_program(LLVM_SPIRV_BIN NAMES llvm-spirv llvm-spirv-16 PATHS ${LLVM_BINARY_DIR} PATH_SUFFIXES ${CMAKE_CONFIGURATION_TYPES})
 
-find_program(Clang_BIN NAMES clang PATHS ${LLVM_BINARY_DIR} PATH_SUFFIXES ${CMAKE_CONFIGURATION_TYPES})
-find_program(LLVM_SPIRV_BIN NAMES llvm-spirv PATHS ${LLVM_BINARY_DIR} PATH_SUFFIXES ${CMAKE_CONFIGURATION_TYPES})
-
-# add_custom_command(OUTPUT spv_kernels.spv
-	# COMMAND ${Clang_BIN} --target=spirv64 -o spv_kernels.spv ${CMAKE_CURRENT_SOURCE_DIR}/spv_kernels.cl
-    # MAIN_DEPENDENCY spv_kernels.spv)
+#add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/spv_kernels.spv
+	#COMMAND ${Clang_BIN} --target=spirv64 -o spv_kernels.spv -v ${CMAKE_CURRENT_SOURCE_DIR}/spv_kernels.cl
+	#MAIN_DEPENDENCY spv_kernels.cl)
 
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/spv_kernels.spv
-	COMMAND ${Clang_BIN} -cc1 -triple spirv64 -emit-llvm-bc -emit-llvm-uselists -main-file-name spv_kernels.cl -v -finclude-default-header -fdeclare-opencl-builtins -fgnuc-version=4.2.1 -fno-threadsafe-statics -fcolor-diagnostics -o ${CMAKE_CURRENT_BINARY_DIR}/spv_kernels.bc -x cl ${CMAKE_CURRENT_SOURCE_DIR}/spv_kernels.cl
+	COMMAND ${Clang_BIN} --target=spirv64 -cl-std=CL1.2 -c -emit-llvm -o ${CMAKE_CURRENT_BINARY_DIR}/spv_kernels.bc ${CMAKE_CURRENT_SOURCE_DIR}/spv_kernels.cl
 	COMMAND ${LLVM_SPIRV_BIN} ${CMAKE_CURRENT_BINARY_DIR}/spv_kernels.bc -o ${CMAKE_CURRENT_BINARY_DIR}/spv_kernels.spv
 	MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/spv_kernels.cl)
 

@@ -2,7 +2,7 @@
 #include <anydsl_runtime.h>
 #include <iostream>
 
-int main(int argc, const char* argv) {
+int main(int argc, const char** argv) {
 
 	anydsl_info();
 

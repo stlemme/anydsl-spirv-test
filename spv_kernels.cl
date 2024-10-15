@@ -1,7 +1,9 @@
 
 //#define CL_TARGET_OPENCL_VERSION 120
 //#include <CL/opencl.h>
-#include <stdint.h>
+//#include <stdint.h>
+
+typedef uint uint32_t;
 
 
 __kernel void copy_krnl(__global const uint32_t* src, __global uint32_t* dst)
