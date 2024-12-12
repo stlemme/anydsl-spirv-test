@@ -33,3 +33,22 @@ add_executable(spirv-copy-kernel copy-kernel.cpp ${CMAKE_CURRENT_BINARY_DIR}/spv
 target_compile_definitions(spirv-copy-kernel PRIVATE KERNEL_PATH="${CMAKE_CURRENT_BINARY_DIR}")
 target_include_directories(spirv-copy-kernel PRIVATE ${AnyDSL_runtime_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(spirv-copy-kernel PRIVATE runtime)
+
+include(CTest)
+
+message(STATUS "runtime support: ${AnyDSL_runtime_PLATFORMS}")
+foreach(_backend cuda opencl levelzero)
+    foreach(_variant ss ms sd md mm dg)
+        set(_suffix "${_variant}-${_backend}")
+        set(_config_file ${CMAKE_CURRENT_BINARY_DIR}/reserve_shared-config-${_suffix}.art)
+        configure_file(reserve_shared-config.art.in ${_config_file} @ONLY)
+        anydsl_runtime_wrap(_program-${_suffix}
+            FRONTEND artic
+            NAME reserve_shared-${_suffix}
+            FILES reserve_shared.art ${_config_file})
+        add_executable(reserve_shared-${_suffix} ${_program-${_suffix}})
+        target_link_libraries(reserve_shared-${_suffix} PRIVATE runtime)
+	add_test(NAME reserve_shared-${_suffix} COMMAND reserve_shared-${_suffix})
+    endforeach()
+endforeach()
+

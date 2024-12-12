@@ -1,0 +1,119 @@
+
+type data_type = i16;
+
+type CopyKernel = fn(WorkItem, & addrspace(1) [data_type], &mut addrspace(1) [data_type]) -> ();
+
+// ss, ms  =  single/multiple statically sized
+// sd, md  =  single/multiple dynamically sized
+//     mm  =  multiple mixed statically and dynamically sized
+// dg      =  direct global (no local shared memory)
+
+fn make_kernel_ss(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
+    |item, arr, out| {
+        let gid = item.gidy() * nx + item.gidx();
+        let lid = item.tidy() * bx + item.tidx();
+
+        let lsm = reserve_shared[data_type](bx*by);
+
+        lsm(lid) = arr(gid);
+        out(gid) = lsm(lid);
+    }
+}
+
+fn make_kernel_ms(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
+    |item, arr0, out0| {
+        let gid = item.gidy() * nx + item.gidx();
+        let lid = item.tidy() * bx + item.tidx();
+
+        let lsm1 = reserve_shared[data_type](bx*by);
+        let lsm2 = reserve_shared[i32](bx*by);
+
+        lsm1(lid) = arr0(gid);
+        lsm2(lid) = lsm1(lid) as i32;
+        out0(gid) = lsm2(lid) as data_type;
+    }
+}
+
+static mut uy:i32 = 1;
+
+fn make_kernel_sd(nx: i32, ny: i32, bx: i32, _by: i32) -> CopyKernel {
+    make_kernel_ss(nx, ny, bx, uy)
+}
+
+fn make_kernel_md(nx: i32, ny: i32, bx: i32, _by: i32) -> CopyKernel {
+    make_kernel_ms(nx, ny, bx, uy)
+}
+
+fn make_kernel_mm(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
+    |item, arr0, out0| {
+        let gid = item.gidy() * nx + item.gidx();
+        let lid = item.tidy() * bx + item.tidx();
+
+        let lsm1 = reserve_shared[data_type](bx*uy);
+        let lsm2 = reserve_shared[i32](bx*by);
+
+        lsm1(lid) = arr0(gid);
+        lsm2(lid) = lsm1(lid) as i32;
+        out0(gid) = lsm2(lid) as data_type;
+    }
+}
+
+fn make_kernel_dg(nx: i32, _ny: i32, _bx: i32, _by: i32) -> CopyKernel {
+    |item, arr, out| {
+        let gid = item.gidy() * nx + item.gidx();
+        out(gid) = arr(gid);
+    }
+}
+
+
+#[export]
+fn main() -> i32 {
+    let (width, height)  = (2048, 2048);
+    let (bx, by)         = (  32,    8);
+
+    let arr = alloc_cpu((width * height) as i64 * sizeof[data_type]());
+    let out = alloc_cpu((width * height) as i64 * sizeof[data_type]());
+    let arr_ptr = bitcast[&mut[data_type]](arr.data);
+    let out_ptr = bitcast[&mut[data_type]](out.data);
+
+    for i in range(0, width*height) {
+        arr_ptr(i) = i as data_type;
+        out_ptr(i) = 0:data_type;
+    }
+
+    let device = acc(dev);
+
+    let dev_arr = device.alloc(arr.size);
+    let dev_out = device.alloc(out.size);
+    copy(arr, dev_arr);
+    copy(out, dev_out);
+
+    let dev_arr_ptr = bitcast[& addrspace(1) [data_type]](dev_arr.data);
+    let dev_out_ptr = bitcast[&mut addrspace(1) [data_type]](dev_out.data);
+
+    uy = by;
+    let copy_kernel = make_kernel(width, height, bx, by);
+
+    for item in device.exec((width, height, 1), (bx, by, 1)) {
+        copy_kernel(item, dev_arr_ptr, dev_out_ptr);
+    }
+
+    copy(dev_out, out);
+
+    let mut passed = 0;
+    for i in range(0, width*height) {
+        if bitcast[&[data_type]](out.data)(i) != bitcast[&[data_type]](arr.data)(i) { passed++; }
+    }
+    if passed == 0 {
+        print_string("Test PASSED!\n");
+    } else {
+        print_string("Test FAILED!\n");
+    }
+
+    release(dev_arr);
+    release(dev_out);
+    release(arr);
+    release(out);
+
+    if passed >= 256 { 255 } else { passed }
+}

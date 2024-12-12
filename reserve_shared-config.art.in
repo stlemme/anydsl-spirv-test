@@ -1,0 +1,5 @@
+static acc = @_backend@_accelerator;
+static dev = 0;
+
+static make_kernel = make_kernel_@_variant@;
+
