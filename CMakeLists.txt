@@ -34,6 +34,12 @@ target_compile_definitions(spirv-copy-kernel PRIVATE KERNEL_PATH="${CMAKE_CURREN
 target_include_directories(spirv-copy-kernel PRIVATE ${AnyDSL_runtime_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(spirv-copy-kernel PRIVATE runtime)
 
+add_executable(spirv-copy-kernel-lsm copy-kernel-lsm.cpp ${CMAKE_CURRENT_BINARY_DIR}/spv_kernels.spv)
+target_compile_definitions(spirv-copy-kernel-lsm PRIVATE KERNEL_PATH="${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(spirv-copy-kernel-lsm PRIVATE ${AnyDSL_runtime_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(spirv-copy-kernel-lsm PRIVATE runtime)
+
+
 include(CTest)
 
 message(STATUS "runtime support: ${AnyDSL_runtime_PLATFORMS}")
