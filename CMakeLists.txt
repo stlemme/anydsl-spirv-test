@@ -58,3 +58,12 @@ foreach(_backend cuda opencl levelzero)
     endforeach()
 endforeach()
 
+
+anydsl_runtime_wrap(_program_copy_multi_gpu
+       FRONTEND artic
+       NAME copy-multi-gpu
+       FILES copy-multi-gpu.art)
+add_executable(copy-multi-gpu ${_program_copy_multi_gpu})
+target_link_libraries(copy-multi-gpu PRIVATE runtime)
+# add_test(NAME copy-multi-gpu COMMAND copy-multi-gpu)
+

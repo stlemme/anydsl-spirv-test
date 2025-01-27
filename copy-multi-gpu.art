@@ -1,0 +1,139 @@
+
+type data_type = i16;
+
+type CopyKernel = fn(WorkItem, & addrspace(1) [data_type], &mut addrspace(1) [data_type]) -> ();
+
+/*
+fn make_kernel_ss(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
+    |item, arr, out| {
+        let gid = item.gidy() * nx + item.gidx();
+        let lid = item.tidy() * bx + item.tidx();
+
+        let lsm = reserve_shared[data_type](bx*by);
+
+        lsm(lid) = arr(gid);
+        out(gid) = lsm(lid);
+    }
+}
+*/
+
+fn make_kernel_dg(nx: i32, _ny: i32, _bx: i32, _by: i32) -> CopyKernel {
+    |item, arr, out| {
+        let gid = item.gidy() * nx + item.gidx();
+        out(gid) = arr(gid);
+    }
+}
+
+fn @multi_gpu_accelerator(acc: fn(i32)->Accelerator, num: i32, dev: fn(i32)->i32) -> Accelerator {
+
+    let acc_dev = @|i:i32| -> Accelerator {
+        let j = dev(i);
+        acc(j)
+    };
+
+    Accelerator {
+    exec = @|body| |grid, block| {
+
+        // TODO: proper scheduling of workload
+        // TODO: handle block borders proper
+        let nblky = grid.1 / block.1 / num;
+        let gdimy = nblky * block.1;
+
+        let dev_grid = (grid.0, gdimy, grid.2);
+		
+        let dev_item = |i:i32, item:WorkItem| WorkItem {
+            tidx  = @|| item.tidx(),
+            tidy  = @|| item.tidy(),
+            tidz  = @|| item.tidz(),
+            bidx  = @|| item.bidx(),
+            bidy  = @|| i*nblky + item.bidy(),
+            bidz  = @|| item.bidz(),
+            gidx  = @|| item.gidx(),
+            gidy  = @|| i*gdimy + item.gidy(),
+            gidz  = @|| item.gidz(),
+            bdimx = @|| item.bdimx(),
+            bdimy = @|| item.bdimy(),
+            bdimz = @|| item.bdimz(),
+            gdimx = @|| item.gdimx(),
+            gdimy = @|| num*gdimy,
+            gdimz = @|| item.gdimz(),
+            nblkx = @|| item.nblkx(),
+            nblky = @|| num*nblky,
+            nblkz = @|| item.nblkz()
+        };
+
+        for i in unroll(0, num) {
+            for item in acc_dev(i).exec(dev_grid, block) {
+                @body(dev_item(i, item))
+            }
+        }
+    },
+    sync          = @|| for i in unroll(0, num) { acc_dev(i).sync() },
+    alloc         = @|size| acc_dev(0).alloc_unified(size),
+    alloc_unified = @|size| acc_dev(0).alloc_unified(size),
+    barrier       = @|| for i in unroll(0, num) { acc_dev(i).barrier() }
+    }
+}
+
+//static dev = 0;
+//static acc = levelzero_accelerator;
+
+static dev = [0, 1];
+static acc = |_dev:i32| multi_gpu_accelerator(levelzero_accelerator, 2, @|i| { dev(i) });
+
+static make_kernel = make_kernel_dg;
+
+#[export]
+fn main() -> i32 {
+    let (width, height)  = (2048, 2048);
+    let (bx, by)         = (  32,    8);
+
+    let arr = alloc_cpu((width * height) as i64 * sizeof[data_type]());
+    let out = alloc_cpu((width * height) as i64 * sizeof[data_type]());
+    let arr_ptr = bitcast[&mut[data_type]](arr.data);
+    let out_ptr = bitcast[&mut[data_type]](out.data);
+
+    for i in range(0, width*height) {
+        arr_ptr(i) = i as data_type;
+        out_ptr(i) = 0:data_type;
+    }
+
+    //let device = acc(dev);
+    let device = acc(0);
+
+    let dev_arr = device.alloc(arr.size);
+    let dev_out = device.alloc(out.size);
+    copy(arr, dev_arr);
+    copy(out, dev_out);
+
+    let dev_arr_ptr = bitcast[& addrspace(1) [data_type]](dev_arr.data);
+    let dev_out_ptr = bitcast[&mut addrspace(1) [data_type]](dev_out.data);
+
+    let copy_kernel = make_kernel(width, height, bx, by);
+
+    for item in device.exec((width, height, 1), (bx, by, 1)) {
+        copy_kernel(item, dev_arr_ptr, dev_out_ptr);
+    }
+
+    copy(dev_out, out);
+
+    let mut passed = 0;
+    for i in range(0, width*height) {
+        if bitcast[&[data_type]](out.data)(i) != bitcast[&[data_type]](arr.data)(i) { passed++; }
+    }
+    if passed == 0 {
+        print_string("Test PASSED!\n");
+    } else {
+        print_string("Test FAILED!\n");
+        print_i32(passed);
+        print_string("\n");
+    }
+
+    release(dev_arr);
+    release(dev_out);
+    release(arr);
+    release(out);
+
+    if passed >= 256 { 255 } else { passed }
+}
+
