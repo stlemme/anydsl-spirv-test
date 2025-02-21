@@ -8,7 +8,7 @@ type CopyKernel = fn(WorkItem, & addrspace(1) [data_type], &mut addrspace(1) [da
 //     mm  =  multiple mixed statically and dynamically sized
 // dg      =  direct global (no local shared memory)
 
-fn make_kernel_ss(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
+fn make_kernel_ss(nx: i32, _ny: i32, bx: i32, by: i32, group_barrier: fn()->()) -> CopyKernel {
     |item, arr, out| {
         let gid = item.gidy() * nx + item.gidx();
         let lid = item.tidy() * bx + item.tidx();
@@ -16,11 +16,12 @@ fn make_kernel_ss(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
         let lsm = reserve_shared[data_type](bx*by);
 
         lsm(lid) = arr(gid);
-        out(gid) = lsm(lid);
+        group_barrier();
+        out(gid ^ 3) = lsm(lid ^ 3);
     }
 }
 
-fn make_kernel_ms(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
+fn make_kernel_ms(nx: i32, _ny: i32, bx: i32, by: i32, group_barrier: fn()->()) -> CopyKernel {
     |item, arr0, out0| {
         let gid = item.gidy() * nx + item.gidx();
         let lid = item.tidy() * bx + item.tidx();
@@ -29,22 +30,24 @@ fn make_kernel_ms(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
         let lsm2 = reserve_shared[i32](bx*by);
 
         lsm1(lid) = arr0(gid);
-        lsm2(lid) = lsm1(lid) as i32;
-        out0(gid) = lsm2(lid) as data_type;
+        group_barrier();
+        lsm2(lid ^ 1) = lsm1(lid ^ 1) as i32;
+        group_barrier();
+        out0(gid ^ 2) = lsm2(lid ^ 2) as data_type;
     }
 }
 
 static mut uy:i32 = 1;
 
-fn make_kernel_sd(nx: i32, ny: i32, bx: i32, _by: i32) -> CopyKernel {
-    make_kernel_ss(nx, ny, bx, uy)
+fn make_kernel_sd(nx: i32, ny: i32, bx: i32, _by: i32, group_barrier: fn()->()) -> CopyKernel {
+    make_kernel_ss(nx, ny, bx, uy, group_barrier)
 }
 
-fn make_kernel_md(nx: i32, ny: i32, bx: i32, _by: i32) -> CopyKernel {
-    make_kernel_ms(nx, ny, bx, uy)
+fn make_kernel_md(nx: i32, ny: i32, bx: i32, _by: i32, group_barrier: fn()->()) -> CopyKernel {
+    make_kernel_ms(nx, ny, bx, uy, group_barrier)
 }
 
-fn make_kernel_mm(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
+fn make_kernel_mm(nx: i32, _ny: i32, bx: i32, by: i32, group_barrier: fn()->()) -> CopyKernel {
     |item, arr0, out0| {
         let gid = item.gidy() * nx + item.gidx();
         let lid = item.tidy() * bx + item.tidx();
@@ -53,12 +56,14 @@ fn make_kernel_mm(nx: i32, _ny: i32, bx: i32, by: i32) -> CopyKernel {
         let lsm2 = reserve_shared[i32](bx*by);
 
         lsm1(lid) = arr0(gid);
-        lsm2(lid) = lsm1(lid) as i32;
-        out0(gid) = lsm2(lid) as data_type;
+        group_barrier();
+        lsm2(lid ^ 1) = lsm1(lid ^ 1) as i32;
+        group_barrier();
+        out0(gid ^ 2) = lsm2(lid ^ 2) as data_type;
     }
 }
 
-fn make_kernel_dg(nx: i32, _ny: i32, _bx: i32, _by: i32) -> CopyKernel {
+fn make_kernel_dg(nx: i32, _ny: i32, _bx: i32, _by: i32, _group_barrier: fn()->()) -> CopyKernel {
     |item, arr, out| {
         let gid = item.gidy() * nx + item.gidx();
         out(gid) = arr(gid);
@@ -92,7 +97,7 @@ fn main() -> i32 {
     let dev_out_ptr = bitcast[&mut addrspace(1) [data_type]](dev_out.data);
 
     uy = by;
-    let copy_kernel = make_kernel(width, height, bx, by);
+    let copy_kernel = make_kernel(width, height, bx, by, device.barrier);
 
     for item in device.exec((width, height, 1), (bx, by, 1)) {
         copy_kernel(item, dev_arr_ptr, dev_out_ptr);
@@ -102,7 +107,13 @@ fn main() -> i32 {
 
     let mut passed = 0;
     for i in range(0, width*height) {
-        if bitcast[&[data_type]](out.data)(i) != bitcast[&[data_type]](arr.data)(i) { passed++; }
+        let val = bitcast[&[data_type]](out.data)(i);
+        let exp = bitcast[&[data_type]](arr.data)(i);
+        if val != exp {
+            passed++;
+            if passed > 128 { continue() }
+            print_string("mismatch at "); print_i32(i); print_string(": "); print_i32(val as i32); print_string(" while expected "); print_i32(exp as i32); print_string("\n");
+        }
     }
     if passed == 0 {
         print_string("Test PASSED!\n");
