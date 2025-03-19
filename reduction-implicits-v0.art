@@ -1,0 +1,204 @@
+
+
+
+struct Group[G] {
+	size: i32,										// total num threads
+	//subgroups: fn(fn(i32, Group)->()) -> fn()->(),	// split group into subgroups according to hardware topology
+	num_subgroups: i32,								// total num subgroups
+	//barrier: fn() -> (),
+	//shared: fn() -> &mut[u8]						// allocate/reserve memory
+}
+
+
+fn @div_up(num: i32, div: i32) -> i32 {
+	let blocks = num / div;
+	if num % div == 0 {
+		blocks
+	} else {
+		blocks + 1
+	}
+}
+
+
+static warp_size:i32 = 32;
+
+/*
+fn make_cuda_thread(acc: Accelerator, _idx: i32) = Group {
+	size = 1,
+	subgroups = @|body| @|| {
+		let idx = 0;
+		let subgroup = make_cuda_thread(acc, idx);
+		@body(idx, subgroup)
+	},
+	num_subgroups = 1
+};
+
+// TODO: slice a warp into sub warps
+
+fn make_cuda_warp(acc: Accelerator, _idx: i32, _size: i32) = Group {
+	size = warp_size,
+	subgroups = @|body| @|| {
+		let idx = cuda_laneid();
+		let subgroup = make_cuda_thread(acc, idx);
+		@body(idx, subgroup)
+	},
+	num_subgroups = warp_size
+};
+
+// TODO: slice a block into subset of its warps
+
+fn make_cuda_block(acc: Accelerator, _idx: i32, size: i32) -> Group {
+	let num_warps_per_block = @|| (size + warp_size - 1) / warp_size;
+	Group {
+		size = size,
+		subgroups = @|body| @|| {
+			let idx = cuda_threadIdx_x() / warp_size;
+			let subgroup = make_cuda_warp(acc, idx);
+			@body(idx, subgroup)
+		},
+		num_subgroups = num_warps_per_block
+	}
+}
+*/
+
+/*
+struct CUDAThread {
+	size: i32,											// total num threads
+	//subgroups: fn(fn(i32, CUDAThread)->()) -> fn()->(),	// split group into subgroups according to hardware topology
+	num_subgroups: i32,									// total num subgroups
+	//barrier: fn() -> (),
+	//shared: fn() -> &mut[u8]							// allocate/reserve memory
+}
+
+struct CUDAWarp {
+	size: i32,											// total num threads
+	subgroups: fn(fn(i32, CUDAThread)->()) -> fn()->(),	// split group into subgroups according to hardware topology
+	num_subgroups: i32,									// total num subgroups
+	//barrier: fn() -> (),
+	//shared: fn() -> &mut[u8]							// allocate/reserve memory
+}
+
+struct CUDABlock {
+	size: i32,											// total num threads
+	subgroups: fn(fn(i32, CUDAWarp)->()) -> fn()->(),	// split group into subgroups according to hardware topology
+	num_subgroups: i32,									// total num subgroups
+	//barrier: fn() -> (),
+	//shared: fn() -> &mut[u8]							// allocate/reserve memory
+}
+
+struct CUDAGrid {
+	size: i32,											// total num threads
+	subgroups: fn(fn(i32, CUDABlock)->()) -> fn()->(),	// split group into subgroups according to hardware topology
+	num_subgroups: i32,									// total num subgroups
+	//barrier: fn() -> (),
+	//shared: fn() -> &mut[u8]							// allocate/reserve memory
+}
+*/
+
+
+struct CUDAGrid   { platform: i32 }
+struct CUDABlock  { platform: i32 }
+struct CUDAWarp   { platform: i32 }
+struct CUDAThread { platform: i32 }
+
+
+type make_subgroup_fn[G, S] = fn(Group[G]) -> Group[S];
+
+struct Topology[G, S] { make_subgroup: make_subgroup_fn[G, S] }
+
+implicit = Topology[CUDAGrid, CUDABlock] {
+	make_subgroup = |group: Group[CUDAGrid]| Group[CUDABlock] {
+		size = group.size / group.num_subgroups,
+		num_subgroups = 1
+	}
+};
+
+
+struct Index[G] { get_id : fn()->i32 }
+
+implicit = Index[CUDABlock] { get_id = cuda_blockIdx_x };
+
+fn subgroups[G, S](body: fn(i32, Group[S])->(), implicit sub: Topology[G, S], implicit idx: Index[S]) = @|group: Group[G]| {
+	let subgroup = sub.make_subgroup(group);
+	let idx = idx.get_id();
+
+	body(idx, subgroup)
+};
+
+fn make_cuda_group(body: fn(Group[CUDAGrid])->()) = @|acc: Accelerator, size: i32, block: i32| {
+
+	let g = (size, 1, 1);
+	let b = (block, 1, 1);
+
+	for _ in acc.exec(g, b) {
+		let group = Group[CUDAGrid] {
+			size = size,
+			//subgroups = @|body| @|| {
+				//let idx = cuda_blockIdx_x();
+				//let subgroup = make_cuda_block(acc, idx, block);
+				//@body(idx, subgroup)
+			//},
+			num_subgroups = div_up(size, block)
+		};
+
+		body(group)
+	}
+};
+
+
+fn prgmod_find_element[G](group: Group[G], array: Accessor, element: data_type) -> i32 {
+	if group.size == 1 {
+
+		if array(0) == element { 1 } else { 0 }
+
+	} else {
+		let mut result:i32 = 42;
+
+		for idx, subgroup in subgroups(group) {
+			//let res = prgmod_find_element(subgroup, make_partition(array, idx, group, subgroup), element);
+			//if idx = 0 {
+			//	result = res
+			//}
+		}
+
+		//for idx, subgroup in group.subgroups() {
+		//	let res = prgmod_find_element(subgroup, make_partition(array, idx, group, subgroup), element);
+		//	if idx = 0 {
+		//		result = res
+		//	}
+		//}
+
+		result
+
+	}
+}
+
+
+fn find_element_prgmodB(acc: Accelerator, data: Accessor, elem: data_type, num: i32, bs: i32) -> i32 {
+	let result_cpu = alloc_cpu(sizeof[i32]());
+	let result_dev = acc.alloc(sizeof[i32]());
+
+	let p_result_cpu = bitcast[&mut addrspace(0) i32](result_cpu.data);
+	let p_result_dev = bitcast[&mut addrspace(1) [i32]](result_dev.data);
+
+	*p_result_cpu = 0;
+	copy(result_cpu, result_dev);
+
+	//let g = (num, 1, 1);
+	//let b = (bs, 1, 1);
+
+	for group in make_cuda_group(acc, num, bs) {
+		let p_result = &mut p_result_dev(0);
+
+		//*p_result = prgmod_find_element(group, data, elem);
+		*p_result = prgmod_find_element[CUDAGrid](group, data, elem);
+	}
+
+	copy(result_dev, result_cpu);
+	let result = *p_result_cpu;
+
+	release(result_dev);
+	release(result_cpu);
+
+	result
+}

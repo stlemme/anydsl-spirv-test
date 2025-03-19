@@ -1,0 +1,52 @@
+
+type data_type = i32;
+type Accessor = fn(i32) -> data_type;
+
+
+
+#[export]
+fn main() -> i32 {
+
+        let acc = cuda_accelerator(0);
+
+        let num = 1024;
+        let bs  =  128;
+        let elem1 = 142;
+        let elem2 = -142;
+
+        let buf = acc.alloc(num as i64 * sizeof[data_type]());
+        let data = bitcast[&mut addrspace(1) [data_type]](buf.data);
+
+        let g = (num, 1, 1);
+        let b = (bs, 1, 1);
+
+        for item in acc.exec(g, b) {
+            if item.gidx() < num {
+                let idx = item.gidx();
+                data(idx) = idx;
+            }
+        }
+
+        //let find_element = find_element_refA;
+        //let find_element = find_element_refB;
+        //let find_element = find_element_refC;
+        //let find_element = find_element_prgmodA;
+        let find_element = find_element_prgmodB;
+
+        let result_ref1 = find_element(acc, |i| data(i), elem1, num, bs);
+        let result_ref2 = find_element(acc, |i| data(i), elem2, num, bs);
+
+        release(buf);
+
+        print_string("Result (reference): ");
+        print_i32(result_ref1);
+        print_string(" / ");
+        print_i32(result_ref2);
+        print_string("\n");
+
+        if (result_ref1 == 1) && (result_ref2 == 0) {
+            0
+        } else {
+            -1
+        }
+}

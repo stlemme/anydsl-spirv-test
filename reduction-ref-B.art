@@ -1,0 +1,35 @@
+
+fn find_element_refB(acc: Accelerator, data: Accessor, elem: data_type, num: i32, bs: i32) -> i32 {
+	let result_cpu = alloc_cpu(sizeof[i32]());
+	let result_dev = acc.alloc(sizeof[i32]());
+
+	let p_result_cpu = bitcast[&mut addrspace(0) i32](result_cpu.data);
+	let p_result_dev = bitcast[&mut addrspace(1) [i32]](result_dev.data);
+
+	*p_result_cpu = 0;
+	copy(result_cpu, result_dev);
+
+	let g = (num, 1, 1);
+	let b = (bs, 1, 1);
+
+	for item in acc.exec(g, b) {
+		let p_result = &mut p_result_dev(0);
+
+		if item.gidx() < num {
+			let wr = cuda_warp_sync_any(0xFFFFFFFF, if data(item.gidx()) == elem { 1 } else { 0 });
+			if wr > 0 {
+				if cuda_laneid() == 0 {
+					*p_result = 1;
+				}
+			}
+		}
+	}
+
+	copy(result_dev, result_cpu);
+	let result = *p_result_cpu;
+
+	release(result_dev);
+	release(result_cpu);
+
+	result
+}
