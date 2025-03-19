@@ -1,5 +1,5 @@
 
-fn find_element_refC(acc: Accelerator, data: Accessor, elem: data_type, num: i32, bs: i32) -> i32 {
+fn find_element_refC(acc: Accelerator, data: Accessor[data_type], elem: data_type, num: i32, bs: i32) -> i32 {
 	let result_cpu = alloc_cpu(sizeof[i32]());
 	let result_dev = acc.alloc(sizeof[i32]());
 
@@ -16,7 +16,7 @@ fn find_element_refC(acc: Accelerator, data: Accessor, elem: data_type, num: i32
 		let p_result = &mut p_result_dev(0);
 
 		if item.gidx() < num {
-			let br = cuda_block_sync_any(if data(item.gidx()) == elem { 1 } else { 0 });
+			let br = cuda_block_sync_any(if data.get(item.gidx()) == elem { 1 } else { 0 });
 			if br > 0 {
 				if item.tidx() == 0 {
 					*p_result = 1;

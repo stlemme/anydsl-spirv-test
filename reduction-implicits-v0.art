@@ -154,7 +154,7 @@ fn prgmod_find_element[G](group: Group[G], array: Accessor, element: data_type) 
 	} else {
 		let mut result:i32 = 42;
 
-		for idx, subgroup in subgroups(group) {
+		for idx, subgroup in subgroups[G](group) {
 			//let res = prgmod_find_element(subgroup, make_partition(array, idx, group, subgroup), element);
 			//if idx = 0 {
 			//	result = res

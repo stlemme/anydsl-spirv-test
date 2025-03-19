@@ -1,6 +1,10 @@
 
 type data_type = i32;
-type Accessor = fn(i32) -> data_type;
+
+struct Accessor[T] {
+	get: fn(i32) -> T,
+	len: fn() -> i32
+}
 
 
 
@@ -30,11 +34,11 @@ fn main() -> i32 {
         //let find_element = find_element_refA;
         //let find_element = find_element_refB;
         //let find_element = find_element_refC;
-        //let find_element = find_element_prgmodA;
-        let find_element = find_element_prgmodB;
+        let find_element = find_element_prgmodA;
+        //let find_element = find_element_prgmodB;
 
-        let result_ref1 = find_element(acc, |i| data(i), elem1, num, bs);
-        let result_ref2 = find_element(acc, |i| data(i), elem2, num, bs);
+        let result_ref1 = find_element(acc, Accessor[data_type] { get = |i| data(i), len = || num }, elem1, num, bs);
+        let result_ref2 = find_element(acc, Accessor[data_type] { get = |i| data(i), len = || num }, elem2, num, bs);
 
         release(buf);
 

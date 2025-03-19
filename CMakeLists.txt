@@ -65,3 +65,13 @@ anydsl_runtime_wrap(_program_copy_multi_gpu
 add_executable(copy-multi-gpu ${_program_copy_multi_gpu})
 target_link_libraries(copy-multi-gpu PRIVATE runtime)
 # add_test(NAME copy-multi-gpu COMMAND copy-multi-gpu)
+
+
+anydsl_runtime_wrap(_program_reduction_ref
+	FRONTEND artic
+	NAME reduction-ref
+	FILES reduction-ref.art reduction-ref-A.art reduction-ref-B.art reduction-ref-C.art reduction-prgmod.art)
+add_executable(reduction-ref ${_program_reduction_ref})
+target_link_libraries(reduction-ref PRIVATE runtime)
+
+

@@ -161,7 +161,7 @@ fn make_partition[G, S](array: Accessor, idx: i32, _group: Group[G], subgroup: G
 }
 
 
-fn prgmod_find_element[G](implicit group: Group[G], array: Accessor, element: data_type) -> i32 {
+fn prgmod_find_element[G](group: Group[G], array: Accessor, element: data_type) -> i32 {
 	if group.size == 1 {
 
 		if array(0) == element { 1 } else { 0 }
