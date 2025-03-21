@@ -3,6 +3,8 @@ type data_type = i32;
 
 struct Accessor[T] {
 	get: fn(i32) -> T,
+	set: fn(i32, T) -> (),
+	//set: fn(i32, T) -> () = @|_, _| { },
 	len: fn() -> i32
 }
 
@@ -37,8 +39,8 @@ fn main() -> i32 {
         let find_element = find_element_prgmodA;
         //let find_element = find_element_prgmodB;
 
-        let result_ref1 = find_element(acc, Accessor[data_type] { get = |i| data(i), len = || num }, elem1, num, bs);
-        let result_ref2 = find_element(acc, Accessor[data_type] { get = |i| data(i), len = || num }, elem2, num, bs);
+        let result_ref1 = find_element(acc, Accessor[data_type] { get = |i| data(i), set = |_,_| { }, len = || num }, elem1, num, bs);
+        let result_ref2 = find_element(acc, Accessor[data_type] { get = |i| data(i), set = |_,_| { }, len = || num }, elem2, num, bs);
 
         release(buf);
 

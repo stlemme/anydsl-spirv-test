@@ -71,7 +71,7 @@ fn make_cuda_group(body: fn(Group)->()) = @|acc: Accelerator, size: i32, block: 
 			subgroups = @|body| @|| {
 				let idx = cuda_blockIdx_x();
 				let subgroup = make_cuda_block(acc, idx, block);
-				@body(idx, subgroup)
+				@body(idx, &subgroup)
 			},
 			num_subgroups = div_up(size, block)
 		};
