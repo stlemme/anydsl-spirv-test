@@ -92,7 +92,7 @@ fn @make_cuda_group(body: fn(Group)->()) = @|acc: Accelerator, size: i32, block:
 	let g = (size, 1, 1);
 	let b = (block, 1, 1);
 
-	let mut total:i32 = 0;
+	//let mut total:i32 = 0;
 
 	let buffer = acc.alloc(accum_buffer_size as i64);
 
@@ -146,7 +146,11 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 				let warp = Group { size = warp_size,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
 					num_subgroups = warp_size, specific = GroupType::CUDAWarp, intrinsics = GroupIntrinsics {
-					barrier_any = Op[Accessor[bool], bool]::Fn(@|pred| { cuda_warp_sync_any(0xFFFFFFFF, cuda_pred(pred.get(cuda_laneid() as i32))) != 0 })
+					/* barrier_any = Op[Accessor[bool], bool]::Fn(@|pred| {
+						let tidx = cuda_laneid() as i32;
+						let val = if tidx < pred.len() { pred.get(tidx) } else { false };
+						cuda_warp_sync_any(0xFFFFFFFF, cuda_pred(val)) != 0
+					}) */
 				} };
 
 				(idx, warp)
