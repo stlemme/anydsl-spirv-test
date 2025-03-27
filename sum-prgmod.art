@@ -1,0 +1,88 @@
+
+
+
+let data = [...];
+let sum = 0;
+
+for grid in kernel() {
+	for thread in grid.threads() {
+		atomic_add(&sum, data(thread.gidx));
+	}
+}
+
+
+
+for grid in kernel() {
+	for block in grid.blocks() {
+		let block_sum = 0;
+
+		for thread in block.threads() {
+			atomic_add(&block_sum, data(thread.gidx));
+		}
+		
+		// block barrier
+		
+		for thread in block.threads() {
+			if thread.lidx == 0 {
+				atomic_add(&sum, block_sum);
+			}
+		}
+	}
+}
+
+
+
+for grid in kernel() {
+	for block in grid.blocks() {
+		let block_sum = 0;
+
+		for wave in block.wave() {
+			for thread in wave.threads() {
+				let mut value = data(thread.gidx);
+				for k = unroll(0, wave.size) {
+					value = value + wave.shuffle(thread.lane ^ (1 << k), value);
+				}
+
+				if thread.laneid == 0 {
+					atomic_add(&block_sum, value);
+				}
+			}
+		}
+
+		// block barrier
+
+		for thread in block.threads() {
+			if thread.lidx == 0 {
+				atomic_add(&sum, block_sum);
+			}
+		}
+	}
+}
+
+
+num workers <=> num elements
+
+
+1/1: return element
+1/N: for loop over elements
+
+M/<=M: subgroups -> aggregation when subgroup_size == 1
+
+M/N: for loop over elements -> call M/<=M subgroups
+
+
+
+
+fn reduce(group: Group, array: Accessor[T], op: fn(T, T)->T) -> T {
+
+	
+
+	for i in range_step(idx, array.len(), subgroup.size) {
+		let res = reduce_any(subgroup, make_partition(array, i, group, subgroup));
+		buf.set(i, res);
+	}
+
+}
+
+
+

@@ -1,13 +1,6 @@
 
 type data_type = i32;
 
-struct Accessor[T] {
-	get: fn(i32) -> T,
-	set: fn(i32, T) -> (),
-	//set: fn(i32, T) -> () = @|_, _| { },
-	len: fn() -> i32
-}
-
 
 
 #[export]
@@ -21,7 +14,7 @@ fn main() -> i32 {
         let elem2 = -142;
 
         let buf = acc.alloc(num as i64 * sizeof[data_type]());
-        let data = bitcast[&mut addrspace(1) [data_type]](buf.data);
+        let ptr = bitcast[&mut addrspace(1) [data_type]](buf.data);
 
         let g = (num, 1, 1);
         let b = (bs, 1, 1);
@@ -29,9 +22,11 @@ fn main() -> i32 {
         for item in acc.exec(g, b) {
             if item.gidx() < num {
                 let idx = item.gidx();
-                data(idx) = idx;
+                ptr(idx) = idx;
             }
         }
+
+        let data = Accessor[data_type] { get = |i| ptr(i), set = |_,_| { }, len = || num };
 
         //let find_element = find_element_refA;
         //let find_element = find_element_refB;
@@ -39,8 +34,8 @@ fn main() -> i32 {
         let find_element = find_element_prgmodA;
         //let find_element = find_element_prgmodB;
 
-        let result_ref1 = find_element(acc, Accessor[data_type] { get = |i| data(i), set = |_,_| { }, len = || num }, elem1, num, bs);
-        let result_ref2 = find_element(acc, Accessor[data_type] { get = |i| data(i), set = |_,_| { }, len = || num }, elem2, num, bs);
+        let result_ref1 = find_element(acc, data, elem1, num, bs);
+        let result_ref2 = 81; //find_element(acc, data, elem2, num, bs);
 
         release(buf);
 

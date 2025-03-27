@@ -70,7 +70,8 @@ target_link_libraries(copy-multi-gpu PRIVATE runtime)
 anydsl_runtime_wrap(_program_reduction_ref
 	FRONTEND artic
 	NAME reduction-ref
-	FILES reduction-ref.art reduction-ref-A.art reduction-ref-B.art reduction-ref-C.art reduction-prgmod.art)
+	FILES reduction-ref.art  reduction-prgmod.art prgmod-common.art prgmod-mapping-cuda.art
+		reduction-ref-A.art reduction-ref-B.art reduction-ref-C.art)
 add_executable(reduction-ref ${_program_reduction_ref})
 target_link_libraries(reduction-ref PRIVATE runtime)
 
