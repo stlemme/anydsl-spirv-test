@@ -64,6 +64,7 @@ fn @make_cuda_group(body: fn(Group)->()) = @|acc: Accelerator, size: i32, block:
 				buffer_offset += size;
 				ptr
 			},
+			barrier = @|| { /* acc.sync() */ },
 			num_subgroups = (size + block - 1) / block,
 			specific = GroupType::CUDAGrid(block),
 			intrinsics = GroupIntrinsics { }
@@ -87,8 +88,18 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 				let num_warps_per_block = (block_size + warp_size - 1) / warp_size;
 				let block = Group { size = block_size,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+					barrier = @|| { cuda_block_sync() },
 					num_subgroups = num_warps_per_block, specific = GroupType::CUDABlock, intrinsics = GroupIntrinsics {
-					//barrier_any = Op[Accessor[bool], bool]::Fn(@|pred| { cuda_block_sync_any(cuda_pred(pred.get(cuda_threadIdx_x()))) != 0 })
+					barrier_any = Op[Accessor[u8], u8]::Fn(@|pred| {
+						let tidx = cuda_threadIdx_x();
+						let mut result:u8 = 0;
+						for i in range_step(tidx, pred.len(), warp_size) {
+							let val = if i < pred.len() { pred.get(i) } else { 0 };
+							result |= cuda_block_sync_any(val as i32) as u8
+							//cuda_warp_sync_any(0xFFFFFFFF, pred.get(tidx) as i32) as u8
+						}
+						result
+					})
 				} };
 
 				(idx, block)
@@ -98,11 +109,17 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 				let idx = cuda_threadIdx_x() / warp_size;
 				let warp = Group { size = warp_size,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+					barrier = @|| cuda_warp_sync(0xFFFFFFFF),
 					num_subgroups = warp_size, specific = GroupType::CUDAWarp, intrinsics = GroupIntrinsics {
 					barrier_any = Op[Accessor[u8], u8]::Fn(@|pred| {
 						let tidx = cuda_laneid() as i32;
-						let val = if tidx < pred.len() { pred.get(tidx) } else { 0 };
-						cuda_warp_sync_any(0xFFFFFFFF, val as i32) as u8
+						let mut result:u8 = 0;
+						for i in range_step(tidx, pred.len(), warp_size) {
+							let val = if i < pred.len() { pred.get(i) } else { 0 };
+							result |= cuda_warp_sync_any(0xFFFFFFFF, val as i32) as u8
+							//cuda_warp_sync_any(0xFFFFFFFF, pred.get(tidx) as i32) as u8
+						}
+						result
 					})
 				} };
 
@@ -113,6 +130,7 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 				let idx = cuda_laneid() as i32;
 				let thread = Group { size = 1,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+					barrier = @|| { /* cuda_threadfence() */ },
 					num_subgroups = 1, specific = GroupType::CUDAThread, intrinsics = GroupIntrinsics { } };
 
 				(idx, thread)
@@ -121,6 +139,7 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 			_ => {
 				(0, Group { size = 1,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+					barrier = @|| { },
 					num_subgroups = 1, specific = GroupType::CUDAThread, intrinsics = GroupIntrinsics { } })
 			}
 		};

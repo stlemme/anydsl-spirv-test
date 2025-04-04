@@ -76,3 +76,10 @@ add_executable(reduction-ref ${_program_reduction_ref})
 target_link_libraries(reduction-ref PRIVATE runtime)
 
 
+anydsl_runtime_wrap(_program_reduction_sum
+	FRONTEND artic
+	NAME reduction-sum
+	FILES reduction-sum.art  sum-prgmod.art prgmod-common.art prgmod-mapping-cuda.art)
+add_executable(reduction-sum ${_program_reduction_sum})
+target_link_libraries(reduction-sum PRIVATE runtime)
+

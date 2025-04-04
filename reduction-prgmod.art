@@ -6,6 +6,7 @@ fn @reduce_any(group: Group, array: Accessor[u8]) -> u8 {
 
 	match group.intrinsics.barrier_any {
 
+		// utilize hardware intrinsic if available
 		Op[Accessor[u8], u8]::Fn(func) => func(array),
 
 		_ => {
@@ -23,35 +24,44 @@ fn @reduce_any(group: Group, array: Accessor[u8]) -> u8 {
 
 				pe_info("reduce_any(group)", 6);
 
+				// allocate memory that is shared accross all subgroups to collect intermediate results
 				for buf in shared_mem[u8](group, group.num_subgroups) {
 
+					// each subgroup processes a partition of array
 					for idx, subgroup in subgroups(group) {
+
+						buf.set(idx, 0);
 					
 						if subgroup.size > 1 {
 
-							// rangestep through subgroups that need to process more than one partition
-
+							let mut res:u8 = 0;
+							// subgroups may need to process more than one partition
 							for i in range_step(idx, array.len(), subgroup.size) {
-								let res = reduce_any(subgroup, make_partition(array, i, group, subgroup));
-								buf.set(i, res);
+								res |= reduce_any(subgroup, make_partition(array, i, group, subgroup));
 							}
+							buf.set(idx, res);
 
 						} else {
+
+							// first thread in group does reduction
 							if idx == 0 {
 								let res = reduce_any(subgroup, array);
 								buf.set(idx, res);
-							} else {
-								buf.set(idx, 0);
 							}
+
 						}
 					}
 
+					// TODO: this may wait forever when syncing warps inside a block with warp intrinsics available
+					group.barrier();
+
+					// further reduction of intermediate results
 					for idx, subgroup in subgroups(group) {
 						if idx == 0 {
 							result = reduce_any(subgroup, buf);
 						}
 					}
-					//result = buf.get(0);
+					//result = reduce_any(group, buf);
 				}
 			}
 
@@ -115,24 +125,68 @@ fn @find_element_prgmodA(acc: Accelerator, data: Accessor[data_type], elem: data
 
 	let scratchpad_size = (num / bs) * sizeof[i32]() as i32;
 
-	for group in make_cuda_group(acc, num, bs, scratchpad_size) {
+	for grid in make_cuda_group(acc, num, bs, scratchpad_size) {
 		let p_result = &mut p_result_dev(0);
 
 		//*p_result = prgmod_find_element(group, data, elem);
 
 		let buf = Accessor[u8] { get = |i| { if data.get(i) == elem { 1 } else { 0 } }, set = |_,_| { }, len = data.len };
 
+		// whole grid
+		*p_result = if reduce_any(grid, buf) != 0 { 23 } else { 47 };
+
+
+		// single block
+		/*
 		// blocks
-		for idx, subgroup in subgroups(group) {
+		for idx, block in subgroups(grid) {
+			// first block
 			if idx == 0 {
-				// warps of first block
-				for idx, subgroup in subgroups(group) {
+				*p_result = if reduce_any(block, buf) != 0 { 23 } else { 47 };
+			}
+		}
+		*/
+
+		// single warp
+		/*
+		// blocks
+		for idx, block in subgroups(grid) {
+			// first block
+			if idx == 0 {
+				// warps
+				for idx, warp in subgroups(block) {
+					// first warp
 					if idx == 0 {
-						*p_result = if reduce_any(subgroup, buf) != 0 { 23 } else { 47 };
+						*p_result = if reduce_any(warp, buf) != 0 { 23 } else { 47 };
 					}
 				}
 			}
 		}
+		*/
+
+		// single thread
+		/*
+		// blocks
+		for idx, block in subgroups(grid) {
+			// first block
+			if idx == 0 {
+				// warps
+				for idx, warp in subgroups(block) {
+					// first warp
+					if idx == 0 {
+						// threads
+						for idx, thread in subgroups(warp) {
+							// first thread
+							if idx == 0 {
+								*p_result = if reduce_any(thread, buf) != 0 { 23 } else { 47 };
+							}
+						}
+					}
+				}
+			}
+		}
+		*/
+
 	}
 
 	copy(result_dev, result_cpu);

@@ -1,0 +1,103 @@
+
+
+
+fn @matrix_multiplyA(acc: Accelerator, a: Tensor, b: Tensor, c: Tensor, d: Tensor, num: i32, bs: i32) -> () {
+
+    let m = a.y_dim;
+    let n = b.x_dim;
+    //assert(a.x_dim == b.y_dim);
+    let k = a.x_dim;
+
+    let tile_size_x = 16;
+    let tile_size_y = 16;
+    let tile_size_k = 16;
+
+    //Each block will calculate x * y many tiles.
+    let block_x_tiles = 8;
+    let block_y_tiles = 8;
+
+    //Each warp will be used to calculate this geometry of tiles.
+    let warp_x_tiles = 2;
+    let warp_y_tiles = 4;
+
+    //Calculate the rest of the grid geometry
+    let block_x_warps = block_x_tiles / warp_x_tiles;
+    let block_y_warps = block_y_tiles / warp_y_tiles;
+
+    let warp_size_x = warp_x_tiles * tile_size_x;
+    let warp_size_y = warp_y_tiles * tile_size_y;
+
+    let matrix_x_tiles = n / tile_size_x;
+    let matrix_y_tiles = m / tile_size_y;
+
+    let matrix_x_warps = matrix_x_tiles / warp_x_tiles;
+    let matrix_y_warps = matrix_y_tiles / warp_y_tiles;
+
+    let matrix_x_blocks = matrix_x_warps / block_x_warps;
+    let matrix_y_blocks = matrix_y_warps / block_y_warps;
+
+    let block_x_threads = block_x_warps * warp_size;
+    let block_y_threads = block_y_warps;
+
+    let matrix_x_threads = matrix_x_blocks * block_x_threads;
+    let matrix_y_threads = matrix_y_blocks * block_y_threads;
+
+
+    fn @matrix_multiply_prgmod_warp_simple(a_warp_tensor : Tensor, b_warp_tensor : Tensor, c_warp_tensor : Tensor, d_warp_tensor : Tensor) {
+        let tidx = nvvm_read_ptx_sreg_tid_x();
+        let lane_id = tidx % warp_size;
+
+        for tile_x in unroll(0, warp_x_tiles) {
+            for tile_y in unroll(0, warp_y_tiles) {
+                let local_x = tile_x * tile_size_x;
+                let local_y = tile_y * tile_size_y;
+
+                let x = local_x + lane_id % 16;
+                for y_step in range_step(0, tile_size_y, 2) {
+                    let y = local_y + y_step + lane_id / 16;
+
+                    let mut rv = c_warp_tensor.data(addr_tensor(x, y, c_warp_tensor)) as f32;
+
+                    for global_k in range(0, k) {
+                        let av = a_warp_tensor.data(addr_tensor(global_k, y, a_warp_tensor)) as f32;
+                        let bv = b_warp_tensor.data(addr_tensor(x, global_k, b_warp_tensor)) as f32;
+
+                        rv += av * bv;
+                    }
+
+                    d_warp_tensor.data(addr_tensor(x, y, d_warp_tensor)) = rv as f16;
+                }
+            }
+        }
+    }
+
+
+
+
+	let scratchpad_size = 0; //(num / bs) * sizeof[i32]() as i32;
+
+    //for work_item in nvvm.exec((matrix_x_threads, matrix_y_threads,  1), (block_x_threads, block_y_threads, 1)) {
+
+	for grid in make_cuda_group(acc, num, bs, scratchpad_size) {
+
+		for bidx, block in subgroups(grid) {
+			// warps
+			for widx, warp in subgroups(block) {
+
+                let warp_x = work_item.gidx() / warp_size * warp_x_tiles * tile_size_x;
+                let warp_y = work_item.gidy() * warp_y_tiles * tile_size_y;
+
+                let a_warp_tensor = sub_tensor(a, 0, warp_y, k, warp_size_y);
+                let b_warp_tensor = sub_tensor(b, warp_x, 0, warp_size_x, k);
+                let c_warp_tensor = sub_tensor(c, warp_x, warp_y, warp_size_x, warp_size_y);
+                let d_warp_tensor = sub_tensor(d, warp_x, warp_y, warp_size_x, warp_size_y);
+
+                matrix_multiply_prgmod_warp_simple(a_warp_tensor, b_warp_tensor, c_warp_tensor, d_warp_tensor);
+				
+			}
+		}
+
+	}
+
+}
+

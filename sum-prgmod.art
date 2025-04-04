@@ -1,6 +1,6 @@
 
 
-
+/*
 let data = [...];
 let sum = 0;
 
@@ -71,18 +71,238 @@ M/<=M: subgroups -> aggregation when subgroup_size == 1
 M/N: for loop over elements -> call M/<=M subgroups
 
 
+*/
 
 
-fn reduce(group: Group, array: Accessor[T], op: fn(T, T)->T) -> T {
+struct Zero[T] { value: T }
+implicit = Zero[i32] { value = 0 };
 
-	
+fn reduce_binop[T](group: Group, array: Accessor[T], binop: fn(T, T)->T, implicit zero: Zero[T]) -> T {
 
-	for i in range_step(idx, array.len(), subgroup.size) {
-		let res = reduce_any(subgroup, make_partition(array, i, group, subgroup));
-		buf.set(i, res);
+	let mut result:T = zero.value;
+
+	if group.size == 1 {
+
+		pe_info("reduce_binop(group)", 5);
+
+		for i in range(0, array.len()) {
+			result = binop(result, array.get(i));
+		}
+
+	} else {
+
+		pe_info("reduce_binop(group)", 6);
+
+		// allocate memory that is shared accross all subgroups to collect intermediate results
+		for buf in shared_mem[T](group, group.num_subgroups) {
+
+			// each subgroup processes a partition of array
+			for idx, subgroup in subgroups(group) {
+
+				buf.set(idx, zero.value);
+				
+				if subgroup.size > 1 {
+
+					let mut res:T = zero.value;
+					// subgroups may need to process more than one partition
+					for i in range_step(idx, array.len(), subgroup.size) {
+						res = binop(res, reduce_binop[T](subgroup, make_partition(array, i, group, subgroup), binop));
+					}
+					buf.set(idx, res);
+
+				} else {
+
+					// first thread in group does reduction
+					if idx == 0 {
+						let res = reduce_binop[T](subgroup, array, binop);
+						buf.set(idx, res);
+					}
+
+				}
+			}
+
+			// TODO: this may wait forever when syncing warps inside a block with warp intrinsics available
+			group.barrier();
+
+			// further reduction of intermediate results
+			for idx, subgroup in subgroups(group) {
+				if idx == 0 {
+					result = reduce_binop[T](subgroup, buf, binop);
+				}
+			}
+			//result = reduce_binop(group, buf, binop);
+		}
 	}
 
+	result
+}
+
+fn reduce_binop_i32(group: Group, array: Accessor[i32], binop: fn(i32, i32)->i32) -> i32 {
+
+	let mut result:i32 = 0;
+
+	if group.size == 1 {
+
+		pe_info("reduce_binop(group)", 5);
+
+		for i in range(0, array.len()) {
+			result = binop(result, array.get(i));
+		}
+
+	} else {
+
+		pe_info("reduce_binop(group)", 6);
+
+		// allocate memory that is shared accross all subgroups to collect intermediate results
+		for buf in shared_mem[i32](group, group.num_subgroups) {
+
+			// each subgroup processes a partition of array
+			for idx, subgroup in subgroups(group) {
+
+				buf.set(idx, 0);
+				
+				if subgroup.size > 1 {
+
+					let mut res:i32 = 0;
+					// subgroups may need to process more than one partition
+					for i in range_step(idx, array.len(), subgroup.size) {
+						res = binop(res, reduce_binop_i32(subgroup, make_partition(array, i, group, subgroup), binop));
+					}
+					buf.set(idx, res);
+
+				} else {
+
+					// first thread in group does reduction
+					if idx == 0 {
+						let res = reduce_binop_i32(subgroup, array, binop);
+						buf.set(idx, res);
+					}
+
+				}
+			}
+
+			// TODO: this may wait forever when syncing warps inside a block with warp intrinsics available
+			group.barrier();
+
+			// further reduction of intermediate results
+			for idx, subgroup in subgroups(group) {
+				if idx == 0 {
+					result = reduce_binop_i32(subgroup, buf, binop);
+				}
+			}
+			//result = reduce_binop_i32(group, buf, binop);
+		}
+	}
+
+	result
+}
+
+fn @reduce_sum(group: Group, array: Accessor[i32]) -> i32 {
+	//reduce_binop[i32](group, array, @|a, b| { a + b })
+	reduce_binop_i32(group, array, @|a, b| { a + b })
 }
 
 
+
+type cuda_atomic_fn[T] = fn(&mut addrspace(1)T, T) -> T;
+
+struct cuda_atomic_add[T] { apply: cuda_atomic_fn[T] }
+implicit = cuda_atomic_add[i32] { apply = cuda_atomic_add_global_i32 };
+
+fn @atomic_add[T](_group: Group, ptr: &mut addrspace(1) T, value: T, implicit add: cuda_atomic_add[T]) -> T {
+	// TODO: take group size into account -> pick one subgroup of size==1 to perform atomic op
+	add.apply(bitcast[&mut addrspace(1)T](ptr), value)
+}
+
+
+fn @reduce_sumA(acc: Accelerator, data: Accessor[data_type], num: i32, bs: i32) -> i32 {
+	let result_cpu = alloc_cpu(sizeof[i32]());
+	let result_dev = acc.alloc(sizeof[i32]());
+
+	let p_result_cpu = bitcast[&mut addrspace(0) i32](result_cpu.data);
+	let p_result_dev = bitcast[&mut addrspace(1) [i32]](result_dev.data);
+
+	*p_result_cpu = 0;
+	copy(result_cpu, result_dev);
+
+	//let g = (num, 1, 1);
+	//let b = (bs, 1, 1);
+
+	let scratchpad_size = (num / bs) * sizeof[i32]() as i32;
+
+	for grid in make_cuda_group(acc, num, bs, scratchpad_size) {
+		let p_result = &mut p_result_dev(0);
+
+		// every thread in grid
+
+		for bidx, block in subgroups(grid) {
+			// warps
+			for widx, warp in subgroups(block) {
+				// threads
+				for tidx, thread in subgroups(warp) {
+					let gidx = bidx*block.size + widx*warp.size + tidx;
+					if gidx < data.len() {
+						//atomic_add[i32](thread, p_result, data.get(gidx));
+						atomic_add(thread, p_result, data.get(gidx));
+					}
+				}
+			}
+		}
+
+
+		// whole grid
+		//*p_result = reduce_sum(grid, data);
+
+
+
+
+		// reduce per block, atomic per block
+		/*
+		for bidx, block in subgroups(grid) {
+			let block_result = reduce_sum(block, make_partition(data, bidx, grid, block));
+
+			// warps
+			for widx, warp in subgroups(block) {
+				if widx == 0 {
+					// threads
+					for tidx, thread in subgroups(warp) {
+						if tidx == 0 {
+							atomic_add[i32](thread, p_result, block_result);
+						}
+					}
+				}
+			}
+		}
+		*/
+
+
+		// reduce per warp, atomic per warp
+		/*
+		for bidx, block in subgroups(grid) {
+			let bp = make_partition(data, bidx, grid, block);
+
+			// warps
+			for widx, warp in subgroups(block) {
+				let wp = make_partition(bp, widx, block, warp);
+				let warp_result = reduce_sum(warp, wp);
+
+				// threads
+				for tidx, thread in subgroups(warp) {
+					if tidx == 0 {
+						atomic_add[i32](thread, p_result, warp_result);
+					}
+				}
+			}
+		}
+		*/
+	}
+
+	copy(result_dev, result_cpu);
+	let result = *p_result_cpu;
+
+	release(result_dev);
+	release(result_cpu);
+
+	result
+}
 

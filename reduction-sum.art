@@ -10,8 +10,6 @@ fn main() -> i32 {
 
         let num = 1024;
         let bs  =  128;
-        let elem1 = 142;
-        let elem2 = -142;
 
         let buf = acc.alloc(num as i64 * sizeof[data_type]());
         let ptr = bitcast[&mut addrspace(1) [data_type]](buf.data);
@@ -28,24 +26,17 @@ fn main() -> i32 {
 
         let data = Accessor[data_type] { get = |i| ptr(i), set = |_,_| { }, len = || num };
 
-        //let find_element = find_element_refA;
-        //let find_element = find_element_refB;
-        //let find_element = find_element_refC;
-        let find_element = find_element_prgmodA;
-        //let find_element = find_element_prgmodB;
+        let reduce_sum = reduce_sumA;
 
-        let result_ref1 = find_element(acc, data, $elem1, num, bs);
-        let result_ref2 = find_element(acc, data, $elem2, num, bs);
+        let result_ref = reduce_sum(acc, data, num, bs);
 
         release(buf);
 
         print_string("Result (reference): ");
-        print_i32(result_ref1);
-        print_string(" / ");
-        print_i32(result_ref2);
+        print_i32(result_ref);
         print_string("\n");
 
-        if (result_ref1 == 1) && (result_ref2 == 0) {
+        if result_ref == (num*(num-1)/2) {
             0
         } else {
             -1
