@@ -1,49 +1,94 @@
 
 static warp_size:i32 = 32;
 
-/*
-fn make_cuda_thread(acc: Accelerator, _idx: i32) = Group {
-	size = 1,
-	subgroups = @|body| @|| {
-		let idx = 0;
-		let subgroup = make_cuda_thread(acc, idx);
-		@body(idx, subgroup)
-	},
-	num_subgroups = 1
-};
+
+fn make_cuda_thread(_idx: i32) -> Group {
+	Group {
+		size = 1,
+		alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+		barrier = @|| {
+			// cuda_threadfence()
+		},
+		subgroups = @|body| @|| {
+			let idx = 0;
+			let thread = make_cuda_thread(idx);
+			@body(idx, thread)
+		},
+		num_subgroups = 1,
+		specific = GroupType::CUDAThread,
+		intrinsics = GroupIntrinsics { }
+	}
+}
 
 // TODO: slice a warp into sub warps
 
-fn make_cuda_warp(acc: Accelerator, _idx: i32, _size: i32) = Group {
-	size = warp_size,
-	subgroups = @|body| @|| {
-		let idx = cuda_laneid();
-		let subgroup = make_cuda_thread(acc, idx);
-		@body(idx, subgroup)
-	},
-	num_subgroups = warp_size
-};
+fn make_cuda_warp(_idx: i32, _num_warps_per_block: i32) -> Group {
 
-// TODO: slice a block into subset of its warps
+	let cuda_warp_barrier_any = @|pred:Accessor[u8]| {
+		let tidx = cuda_laneid() as i32;
+		let mut result:u8 = 0;
+		for i in range_step(tidx, pred.len(), warp_size) {
+			let val = if i < pred.len() { pred.get(i) } else { 0 };
+			result |= cuda_warp_sync_any(0xFFFFFFFF, val as i32) as u8
+			//cuda_warp_sync_any(0xFFFFFFFF, pred.get(tidx) as i32) as u8
+		}
+		result
+	};
 
-fn make_cuda_block(acc: Accelerator, _idx: i32, size: i32) -> Group {
-	let num_warps_per_block = @|| (size + warp_size - 1) / warp_size;
 	Group {
-		size = size,
+		size = warp_size,
+		alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+		barrier = @|| { cuda_warp_sync(0xFFFFFFFF) },
 		subgroups = @|body| @|| {
-			let idx = cuda_threadIdx_x() / warp_size;
-			let subgroup = make_cuda_warp(acc, idx);
-			@body(idx, subgroup)
+			let idx = cuda_laneid() as i32;
+			let thread = make_cuda_thread(idx);
+			@body(idx, thread)
 		},
-		num_subgroups = num_warps_per_block
+		num_subgroups = warp_size,
+		specific = GroupType::CUDAWarp,
+		intrinsics = GroupIntrinsics {
+			//barrier_any = Op[Accessor[u8], u8]::Fn(cuda_warp_barrier_any)
+		}
 	}
 }
-*/
 
-fn @make_cuda_group(body: fn(Group)->()) = @|acc: Accelerator, size: i32, block: i32, accum_buffer_size: i32| {
+fn make_cuda_block(_idx: i32, block_size: i32) -> Group {
+	let num_warps_per_block = (block_size + warp_size - 1) / warp_size;
 
-	let g = (size, 1, 1);
-	let b = (block, 1, 1);
+	let cuda_block_barrier_any = @|pred:Accessor[u8]| {
+		let tidx = cuda_threadIdx_x();
+		let mut result:u8 = 0;
+		for i in range_step(tidx, pred.len(), warp_size) {
+			let val = if i < pred.len() { pred.get(i) } else { 0 };
+			result |= cuda_block_sync_any(val as i32) as u8
+		}
+		result
+	};
+
+	Group {
+		size = block_size,
+		alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+		barrier = @|| { cuda_block_sync() },
+		subgroups = @|body| @|| {
+			let idx = cuda_threadIdx_x() / warp_size;
+			let warp = make_cuda_warp(idx, num_warps_per_block);
+			@body(idx, warp)
+		},
+		num_subgroups = num_warps_per_block,
+		specific = GroupType::CUDABlock,
+		intrinsics = GroupIntrinsics {
+			//barrier_any = Op[Accessor[u8], u8]::Fn(cuda_block_barrier_any)
+		}
+	}
+}
+
+
+fn @make_cuda_group(body: fn(Group)->()) = @|acc: Accelerator, grid_size: i32, block_size: i32, accum_buffer_size: i32| {
+
+	let g = ( grid_size, 1, 1);
+	let b = (block_size, 1, 1);
+
+	let num_blocks = (grid_size + block_size - 1) / block_size;
 
 	//let mut total:i32 = 0;
 
@@ -53,20 +98,20 @@ fn @make_cuda_group(body: fn(Group)->()) = @|acc: Accelerator, size: i32, block:
 		let mut buffer_offset:i32 = 0;
 
 		let group = Group {
-			size = size,
-			//subgroups = @|body| @|| {
-			//	let idx = cuda_blockIdx_x();
-			//	let subgroup = make_cuda_block(acc, idx, block);
-			//	@body(idx, subgroup)
-			//},
+			size = grid_size,
+			subgroups = @|body| @|| {
+				let idx = cuda_blockIdx_x();
+				let block = make_cuda_block(idx, block_size);
+				@body(idx, block)
+			},
 			alloc = @|size| {
 				let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
 				buffer_offset += size;
 				ptr
 			},
 			barrier = @|| { /* acc.sync() */ },
-			num_subgroups = (size + block - 1) / block,
-			specific = GroupType::CUDAGrid(block),
+			num_subgroups = num_blocks,
+			specific = GroupType::CUDAGrid(block_size),
 			intrinsics = GroupIntrinsics { }
 		};
 
@@ -80,8 +125,11 @@ fn @cuda_pred(b: bool) -> i32 {
 	if b { 1 } else { 0 }
 }
 
-fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
+type SubGroup = Group;
+
+fn @subgroups(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
 	@|group| {
+		/*
 		let (idx, subgroup) = match (group.specific) {
 			GroupType::CUDAGrid(block_size) => {
 				let idx = cuda_blockIdx_x();
@@ -89,6 +137,9 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 				let block = Group { size = block_size,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
 					barrier = @|| { cuda_block_sync() },
+					subgroups = @|_body| @|| {
+
+					},
 					num_subgroups = num_warps_per_block, specific = GroupType::CUDABlock, intrinsics = GroupIntrinsics {
 					barrier_any = Op[Accessor[u8], u8]::Fn(@|pred| {
 						let tidx = cuda_threadIdx_x();
@@ -110,6 +161,9 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 				let warp = Group { size = warp_size,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
 					barrier = @|| cuda_warp_sync(0xFFFFFFFF),
+					subgroups = @|_body| @|| {
+
+					},
 					num_subgroups = warp_size, specific = GroupType::CUDAWarp, intrinsics = GroupIntrinsics {
 					barrier_any = Op[Accessor[u8], u8]::Fn(@|pred| {
 						let tidx = cuda_laneid() as i32;
@@ -130,7 +184,12 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 				let idx = cuda_laneid() as i32;
 				let thread = Group { size = 1,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
-					barrier = @|| { /* cuda_threadfence() */ },
+					barrier = @|| {
+						// cuda_threadfence()
+					},
+					subgroups = @|_body| @|| {
+
+					},
 					num_subgroups = 1, specific = GroupType::CUDAThread, intrinsics = GroupIntrinsics { } };
 
 				(idx, thread)
@@ -140,11 +199,19 @@ fn @subgroups(body: fn(i32, Group)->()) -> fn(Group)->() {
 				(0, Group { size = 1,
 					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
 					barrier = @|| { },
+					subgroups = @|_body| @|| {
+
+					},
 					num_subgroups = 1, specific = GroupType::CUDAThread, intrinsics = GroupIntrinsics { } })
 			}
 		};
 
 		body(idx, subgroup)
+		*/
+
+
+		let subgroup_scope = group.subgroups(@|idx, subgroup| body(idx, *subgroup));
+		subgroup_scope()
 	}
 }
 

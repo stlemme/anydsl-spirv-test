@@ -27,7 +27,7 @@ struct GroupIntrinsics {
 
 struct Group {
 	size: i32,										// total num threads
-	//subgroups: fn(fn(i32, Group)->()) -> fn()->(),	// split group into subgroups according to hardware topology
+	subgroups: fn(fn(i32, &Group)->()) -> fn()->(),	// split group into subgroups according to hardware topology
 	num_subgroups: i32,								// total num subgroups
 	alloc: fn(i32) -> &mut[u8],						// allocate/reserve memory
 	barrier: fn() -> (),
