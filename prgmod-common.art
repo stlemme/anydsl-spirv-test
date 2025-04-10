@@ -19,7 +19,8 @@ enum Op[S, T] {
 }
 
 struct GroupIntrinsics {
-	barrier_any: Op[Accessor[u8], u8] = Op[Accessor[u8], u8]::Generic
+	barrier_any: Op[Accessor[u8],  u8] = Op[Accessor[u8],  u8]::Generic,
+	shuffle_i32: Op[   (i32,i32), i32] = Op[   (i32,i32), i32]::Generic,
 	//wmma_load:
 	//wmma_mma:
 	//wmma_store:
@@ -58,4 +59,16 @@ fn @make_partition[T](array: Accessor[T], idx: i32, _group: Group, subgroup: Gro
 }
 
 
-
+fn @pick_single_thread(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
+	@|group| {
+		if group.size > 1 {
+			for idx, subgroup in subgroups(group) {
+				if idx == 0 {
+					pick_single_thread(body)(subgroup)
+				}
+			}
+		} else {
+			@body(0, group)
+		}
+	}
+}

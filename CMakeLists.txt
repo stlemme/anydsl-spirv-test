@@ -67,19 +67,53 @@ target_link_libraries(copy-multi-gpu PRIVATE runtime)
 # add_test(NAME copy-multi-gpu COMMAND copy-multi-gpu)
 
 
-anydsl_runtime_wrap(_program_reduction_ref
-	FRONTEND artic
-	NAME reduction-ref
-	FILES reduction-ref.art  reduction-prgmod.art prgmod-common.art prgmod-mapping-cuda.art
-		reduction-ref-A.art reduction-ref-B.art reduction-ref-C.art)
-add_executable(reduction-ref ${_program_reduction_ref})
-target_link_libraries(reduction-ref PRIVATE runtime)
+# anydsl_runtime_wrap(_program_reduction_ref
+	# FRONTEND artic
+	# NAME reduction-ref
+	# FILES reduction-ref.art  reduction-prgmod.art prgmod-common.art prgmod-mapping-cuda.art
+		# reduction-ref-A.art reduction-ref-B.art reduction-ref-C.art)
+# add_executable(reduction-ref ${_program_reduction_ref})
+# target_link_libraries(reduction-ref PRIVATE runtime)
 
 
-anydsl_runtime_wrap(_program_reduction_sum
-	FRONTEND artic
-	NAME reduction-sum
-	FILES reduction-sum.art  sum-prgmod.art prgmod-common.art prgmod-mapping-cuda.art)
-add_executable(reduction-sum ${_program_reduction_sum})
-target_link_libraries(reduction-sum PRIVATE runtime)
+foreach(_backend cuda)
+    foreach(_variant single-thread single-warp single-block whole-grid)
+        set(_suffix "${_variant}-${_backend}")
+        # set(_config_file ${CMAKE_CURRENT_BINARY_DIR}/reserve_shared-config-${_suffix}.art)
+        # configure_file(reserve_shared-config.art.in ${_config_file} @ONLY)
+        anydsl_runtime_wrap(_program-prgmod-reduction-${_suffix}
+            FRONTEND artic
+            NAME test-prgmod-reduction-${_suffix}
+            FILES reduction-ref.art reduction-prgmod.art prgmod-common.art prgmod-mapping-${_backend}.art
+			test/prgmod_reduction_${_variant}.art)
+        add_executable(test-prgmod-reduction-${_suffix} ${_program-prgmod-reduction-${_suffix}} main.cpp)
+        target_link_libraries(test-prgmod-reduction-${_suffix} PRIVATE runtime)
+		add_test(NAME test-prgmod-reduction-${_suffix} COMMAND test-prgmod-reduction-${_suffix})
+    endforeach()
+
+    foreach(_variant every-thread per-block per-warp whole-grid)
+        set(_suffix "${_variant}-${_backend}")
+        # set(_config_file ${CMAKE_CURRENT_BINARY_DIR}/reserve_shared-config-${_suffix}.art)
+        # configure_file(reserve_shared-config.art.in ${_config_file} @ONLY)
+        anydsl_runtime_wrap(_program-prgmod-sum-${_suffix}
+            FRONTEND artic
+            NAME test-prgmod-sum-${_suffix}
+            FILES reduction-sum.art sum-prgmod.art prgmod-common.art prgmod-mapping-${_backend}.art
+			test/prgmod_sum_${_variant}.art)
+        add_executable(test-prgmod-sum-${_suffix} ${_program-prgmod-sum-${_suffix}} main.cpp)
+        target_link_libraries(test-prgmod-sum-${_suffix} PRIVATE runtime)
+		add_test(NAME test-prgmod-sum-${_suffix} COMMAND test-prgmod-sum-${_suffix})
+    endforeach()
+
+endforeach()
+
+
+
+
+# anydsl_runtime_wrap(_program_reduction_sum
+	# FRONTEND artic
+	# NAME reduction-sum
+	# FILES reduction-sum.art  sum-prgmod.art prgmod-common.art prgmod-mapping-cuda.art)
+# add_executable(reduction-sum ${_program_reduction_sum})
+# target_link_libraries(reduction-sum PRIVATE runtime)
 

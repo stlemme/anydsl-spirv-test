@@ -4,7 +4,7 @@ type data_type = i32;
 
 
 #[export]
-fn main() -> i32 {
+fn entry_fn() -> i32 {
 
         let acc = cuda_accelerator(0);
 

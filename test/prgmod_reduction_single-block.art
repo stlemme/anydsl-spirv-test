@@ -1,0 +1,17 @@
+
+fn test_prgmod_reduction(grid: Group, buf: Accessor[u8], result: fn(i32)->()) -> ()
+{
+	// single block
+
+	// blocks
+	for idx, block in subgroups(grid) {
+		// first block
+		if idx == 0 {
+			if reduce_any(block, buf) != 0 {
+				result(23)
+			} else {
+				result(47)
+			}
+		}
+	}
+}

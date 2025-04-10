@@ -1,0 +1,11 @@
+
+fn test_prgmod_reduction(grid: Group, buf: Accessor[u8], result: fn(i32)->()) -> ()
+{
+	// whole grid
+
+	if reduce_any(grid, buf) != 0 {
+		result(23)
+	} else {
+		result(47)
+	}
+}

@@ -1,0 +1,13 @@
+
+fn test_prgmod_sum(grid: Group, data: Accessor[data_type], p_result: &mut addrspace(1) i32) -> ()
+{
+	// reduce per block, atomic per block
+
+	for bidx, block in subgroups(grid) {
+		let block_result = reduce_sum(block, make_partition(data, bidx, grid, block));
+
+		for _tidx, thread in pick_single_thread(block) {
+			atomic_add(thread, p_result, block_result);
+		}
+	}
+}

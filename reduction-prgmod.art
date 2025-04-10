@@ -79,7 +79,8 @@ fn @prgmod_find_element(group: Group, array: Accessor[data_type], element: data_
 		if array.get(0) == element { 1 } else { 0 }
 
 	} else {
-		let mut result:i32 = 42;
+		//let mut result:i32 = 42;
+		let result:i32 = 42;
 
 		/* for idx, subgroup in subgroups(group) {
 			let res = prgmod_find_element(subgroup, make_partition(array, idx, group, subgroup), element);
@@ -132,9 +133,10 @@ fn @find_element_prgmodA(acc: Accelerator, data: Accessor[data_type], elem: data
 
 		let buf = Accessor[u8] { get = |i| { if data.get(i) == elem { 1 } else { 0 } }, set = |_,_| { }, len = data.len };
 
-		// whole grid
-		*p_result = if reduce_any(grid, buf) != 0 { 23 } else { 47 };
+		test_prgmod_reduction(grid, buf, @|result| { *p_result = result; });
 
+		// whole grid
+		//*p_result = if reduce_any(grid, buf) != 0 { 23 } else { 47 };
 
 		// single block
 		/*

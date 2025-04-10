@@ -1,0 +1,24 @@
+
+fn test_prgmod_sum(grid: Group, data: Accessor[data_type], p_result: &mut addrspace(1) i32) -> ()
+{
+	// reduce per warp, atomic per warp
+
+	for bidx, block in subgroups(grid) {
+		let block_part = make_partition(data, bidx, grid, block);
+
+		// warps
+		for widx, warp in subgroups(block) {
+			let warp_part = make_partition(block_part, widx, block, warp);
+			let warp_result = reduce_sum(warp, warp_part);
+
+			// threads
+			for tidx, thread in subgroups(warp) {
+				if tidx == 0 {
+					atomic_add(thread, p_result, warp_result);
+				}
+			}
+
+		}
+
+	}
+}

@@ -74,12 +74,12 @@ M/N: for loop over elements -> call M/<=M subgroups
 */
 
 
-struct Zero[T] { value: T }
-implicit = Zero[i32] { value = 0 };
+//struct Zero[T] { value: T }
+//implicit = Zero[i32] { value = 0 };
 
-fn reduce_binop[T](group: Group, array: Accessor[T], binop: fn(T, T)->T, implicit zero: Zero[T]) -> T {
+fn @reduce_binop[T](group: Group, array: Accessor[T], binop: fn(T, T)->T, implicit tt: TypeTraits[T]) -> T {
 
-	let mut result:T = zero.value;
+	let mut result:T = tt.zero;
 
 	if group.size == 1 {
 
@@ -99,11 +99,11 @@ fn reduce_binop[T](group: Group, array: Accessor[T], binop: fn(T, T)->T, implici
 			// each subgroup processes a partition of array
 			for idx, subgroup in subgroups(group) {
 
-				buf.set(idx, zero.value);
+				buf.set(idx, tt.zero);
 				
 				if subgroup.size > 1 {
 
-					let mut res:T = zero.value;
+					let mut res:T = tt.zero;
 					// subgroups may need to process more than one partition
 					for i in range_step(idx, array.len(), subgroup.size) {
 						res = binop(res, reduce_binop[T](subgroup, make_partition(array, i, group, subgroup), binop));
@@ -130,72 +130,150 @@ fn reduce_binop[T](group: Group, array: Accessor[T], binop: fn(T, T)->T, implici
 					result = reduce_binop[T](subgroup, buf, binop);
 				}
 			}
-			//result = reduce_binop(group, buf, binop);
+			//result = reduce_binop[T](group, buf, binop);
 		}
 	}
 
 	result
 }
 
-fn reduce_binop_i32(group: Group, array: Accessor[i32], binop: fn(i32, i32)->i32) -> i32 {
 
-	let mut result:i32 = 0;
+/*
+fn @shuffle_i32(group: Group, me: SubGroup, value: i32, other: i32) -> i32 {
+	match group.intrinsics.shuffle_i32 {
 
-	if group.size == 1 {
+		// utilize hardware intrinsic if available
+		Op[(i32, i32), i32]::Fn(shuffle) => {
 
-		pe_info("reduce_binop(group)", 5);
+			let mut result:i32 = 0;
 
-		for i in range(0, array.len()) {
-			result = binop(result, array.get(i));
-		}
+			for lane in range(0, group.size) {
+				let lane_value = shuffle(value, lane);
 
-	} else {
-
-		pe_info("reduce_binop(group)", 6);
-
-		// allocate memory that is shared accross all subgroups to collect intermediate results
-		for buf in shared_mem[i32](group, group.num_subgroups) {
-
-			// each subgroup processes a partition of array
-			for idx, subgroup in subgroups(group) {
-
-				buf.set(idx, 0);
-				
-				if subgroup.size > 1 {
-
-					let mut res:i32 = 0;
-					// subgroups may need to process more than one partition
-					for i in range_step(idx, array.len(), subgroup.size) {
-						res = binop(res, reduce_binop_i32(subgroup, make_partition(array, i, group, subgroup), binop));
-					}
-					buf.set(idx, res);
-
-				} else {
-
-					// first thread in group does reduction
-					if idx == 0 {
-						let res = reduce_binop_i32(subgroup, array, binop);
-						buf.set(idx, res);
-					}
-
+				for tidx, thread in pick_single_thread(group) {
+					result = binop(result, lane_value);
 				}
 			}
 
-			// TODO: this may wait forever when syncing warps inside a block with warp intrinsics available
-			group.barrier();
+			result
+		}
 
-			// further reduction of intermediate results
+
+}
+*/
+
+
+fn @reduce_binop_i32(group: Group, array: Accessor[i32], binop: fn(i32, i32)->i32) -> i32 {
+
+	match group.intrinsics.shuffle_i32 {
+
+		// utilize hardware intrinsic if available
+		Op[(i32, i32), i32]::Fn(shuffle) => {
+
+			let mut result:i32 = 0;
+
 			for idx, subgroup in subgroups(group) {
+				let value = reduce_binop_i32(subgroup, make_partition(array, idx, group, subgroup), binop);
+
+				// TODO: use unroll()
+				// TODO: combine intermediate in different threads / log(n) shfl_sync
+				// TODO: boundary handling for smaller arrays than groups
+
 				if idx == 0 {
-					result = reduce_binop_i32(subgroup, buf, binop);
+					for _tidx, _thread in pick_single_thread(subgroup) {
+
+						for other in range(0, group.size) {
+							let other_value = shuffle(value, other);
+							result = binop(result, other_value);
+						}
+					}
 				}
 			}
-			//result = reduce_binop_i32(group, buf, binop);
+
+			result
+		},
+
+		_ => {
+
+			let mut result:i32 = 0;
+
+			if group.size == 1 {
+
+				pe_info("reduce_binop(group)", 5);
+
+				for i in range(0, array.len()) {
+					result = binop(result, array.get(i));
+				}
+
+			} else {
+
+				pe_info("reduce_binop(group)", 6);
+
+				// allocate memory that is shared accross all subgroups to collect intermediate results
+				for buf in shared_mem[i32](group, group.num_subgroups) {
+
+					// each subgroup processes a partition of array
+					for idx, subgroup in subgroups(group) {
+
+						buf.set(idx, 0);
+				
+						if subgroup.size > 1 {
+
+							let mut res:i32 = 0;
+							// subgroups may need to process more than one partition
+							for i in range_step(idx, array.len(), subgroup.size) {
+								res = binop(res, reduce_binop_i32(subgroup, make_partition(array, i, group, subgroup), binop));
+							}
+							buf.set(idx, res);
+
+						} else {
+
+							// first thread in group does reduction
+							if idx == 0 {
+								let res = reduce_binop_i32(subgroup, array, binop);
+								buf.set(idx, res);
+							}
+
+						}
+					}
+
+					// TODO: this may wait forever when syncing warps inside a block with warp intrinsics available
+					group.barrier();
+
+					// further reduction of intermediate results
+					for idx, subgroup in subgroups(group) {
+						if idx == 0 {
+							result = reduce_binop_i32(subgroup, buf, binop);
+						}
+					}
+					//result = reduce_binop_i32(group, buf, binop);
+				}
+			}
+
+			result
 		}
 	}
-
-	result
 }
+
+struct TypeTraits[T] {
+	zero: T,
+	 one: T,
+	 add: fn(T, T) -> T,
+	 mul: fn(T, T) -> T,
+}
+
+implicit = TypeTraits[i32] {
+	zero = 0,
+	 one = 1,
+	 add = @|a, b| { a + b },
+	 mul = @|a, b| { a * b },
+};
+/*
+fn @reduce_sum[T](group: Group, array: Accessor[T], implicit tt: TypeTraits[T]) -> T {
+	reduce_binop[T](group, array, tt.add)
+	//reduce_binop_i32(group, array, @|a, b| { a + b })
+}
+*/
 
 fn @reduce_sum(group: Group, array: Accessor[i32]) -> i32 {
 	//reduce_binop[i32](group, array, @|a, b| { a + b })
@@ -211,6 +289,10 @@ implicit = cuda_atomic_add[i32] { apply = cuda_atomic_add_global_i32 };
 
 fn @atomic_add[T](_group: Group, ptr: &mut addrspace(1) T, value: T, implicit add: cuda_atomic_add[T]) -> T {
 	// TODO: take group size into account -> pick one subgroup of size==1 to perform atomic op
+	//for _tidx, thread in pick_single_thread(group) {
+	//	add.apply(bitcast[&mut addrspace(1)T](ptr), value)
+	//}
+
 	add.apply(bitcast[&mut addrspace(1)T](ptr), value)
 }
 
@@ -233,8 +315,10 @@ fn @reduce_sumA(acc: Accelerator, data: Accessor[data_type], num: i32, bs: i32) 
 	for grid in make_cuda_group(acc, num, bs, scratchpad_size) {
 		let p_result = &mut p_result_dev(0);
 
-		// every thread in grid
+		test_prgmod_sum(grid, data, p_result)
 
+		// every thread in grid
+		/*
 		for bidx, block in subgroups(grid) {
 			// warps
 			for widx, warp in subgroups(block) {
@@ -248,11 +332,10 @@ fn @reduce_sumA(acc: Accelerator, data: Accessor[data_type], num: i32, bs: i32) 
 				}
 			}
 		}
-
+		*/
 
 		// whole grid
 		//*p_result = reduce_sum(grid, data);
-
 
 
 
@@ -261,20 +344,11 @@ fn @reduce_sumA(acc: Accelerator, data: Accessor[data_type], num: i32, bs: i32) 
 		for bidx, block in subgroups(grid) {
 			let block_result = reduce_sum(block, make_partition(data, bidx, grid, block));
 
-			// warps
-			for widx, warp in subgroups(block) {
-				if widx == 0 {
-					// threads
-					for tidx, thread in subgroups(warp) {
-						if tidx == 0 {
-							atomic_add[i32](thread, p_result, block_result);
-						}
-					}
-				}
+			for _tidx, thread in pick_single_thread(block) {
+				atomic_add(thread, p_result, block_result);
 			}
 		}
 		*/
-
 
 		// reduce per warp, atomic per warp
 		/*
@@ -289,7 +363,7 @@ fn @reduce_sumA(acc: Accelerator, data: Accessor[data_type], num: i32, bs: i32) 
 				// threads
 				for tidx, thread in subgroups(warp) {
 					if tidx == 0 {
-						atomic_add[i32](thread, p_result, warp_result);
+						atomic_add(thread, p_result, warp_result);
 					}
 				}
 			}

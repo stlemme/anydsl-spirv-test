@@ -1,0 +1,23 @@
+
+fn test_prgmod_sum(grid: Group, data: Accessor[data_type], p_result: &mut addrspace(1) i32) -> ()
+{
+	// every thread in grid
+
+	for bidx, block in subgroups(grid) {
+	
+		// warps
+		for widx, warp in subgroups(block) {
+		
+			// threads
+			for tidx, thread in subgroups(warp) {
+			
+				let gidx = bidx*block.size + widx*warp.size + tidx;
+				if gidx < data.len() {
+					//atomic_add[i32](thread, p_result, data.get(gidx));
+					atomic_add(thread, p_result, data.get(gidx));
+				}
+
+			}
+		}
+	}
+}

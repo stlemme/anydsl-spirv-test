@@ -1,0 +1,29 @@
+
+fn test_prgmod_reduction(grid: Group, buf: Accessor[u8], result: fn(i32)->()) -> ()
+{
+	// single thread
+	
+	// blocks
+	for idx, block in subgroups(grid) {
+		// first block
+		if idx == 0 {
+			// warps
+			for idx, warp in subgroups(block) {
+				// first warp
+				if idx == 0 {
+					// threads
+					for idx, thread in subgroups(warp) {
+						// first thread
+						if idx == 0 {
+							if reduce_any(thread, buf) != 0 {
+								result(23)
+							} else {
+								result(47)
+							};
+						}
+					}
+				}
+			}
+		}
+	}
+}

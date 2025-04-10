@@ -1,0 +1,5 @@
+
+fn test_prgmod_sum(grid: Group, data: Accessor[data_type], p_result: &mut addrspace(1) i32) -> ()
+{
+	*p_result = reduce_sum(grid, data);
+}
