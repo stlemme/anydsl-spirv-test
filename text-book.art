@@ -1,0 +1,117 @@
+/*
+ - high-level pseudo code
+ - down to runnable examples
+ - iteration, memory, intrinsics, topology, ...
+ - prgmod: text book like examples
+ - 
+ */
+
+
+
+fn main() -> {
+
+
+	let gpu_options = { enable_wmma = true };
+	for gpu_grid in make_cuda_group(grid_size, block_size, gpu_options) {
+
+		my_prgmod_algo_A(gpu_grid, data, result);
+
+	}
+
+	gpu_schedule = make_tiled_gpu_group(4, 2, 16x16)
+
+	let cpu_options = { vecwidth = 32 }; // favor
+	for cpu_threads in make_cpu_group(num_threads, cpu_options) {
+
+		my_matmul(cpu_threads, A, B, C, D)
+
+	}
+
+	with cpu_group(num_threads, cpu_options) as cpu_threads {
+
+		my_prgmod_algo_A(cpu_threads, data, result)
+
+	}
+
+	//let cpu_threads = make_cpu_group(num_threads, cpu_options);
+	//my_prgmod_algo_A(cpu_threads, data, result);
+
+
+	let gpu_options = { usm = true };
+	for gpus in make_multi_gpu_group(block_size, gpu_options) {
+
+		my_prgmod_algo_A(gpus, data, result);
+
+	}
+
+}
+
+
+
+fn my_prgmod_algo_A ( group : Group, args : ... ) -> () {
+
+	if group.size == 1 {
+
+		// perform some operations per thread
+
+	} else {
+
+		// follow topology and split into subgroups
+
+		for idx, subgroup in subgroups ( group ) {
+			my_prgmod_algo_A ( subgroup, ... );
+		}
+
+	}
+}
+
+
+
+fn my_prgmod_algo_B ( group : Group, args : ... ) -> () {
+
+	if group.size == 1 {
+
+		// perform some operations per thread
+
+	} else {
+
+		// allocate some memory shared across group
+		with shared_mem[i32](group, size) as buffer {
+
+			// follow topology and split into subgroups
+			for idx, subgroup in subgroups ( group ) {
+				my_prgmod_algo_B ( subgroup, buffer, ... );
+			}
+		}
+	}
+}
+
+
+fn my_prgmod_algo_C ( group : Group, binop : fn(i32, i32)->i32, args : ... ) -> i32 {
+
+	// check if hardware intrinsic is
+	// available for group
+
+	match group.intrinsics.binop_i32 {
+
+		Op[(i32, i32), i32]::Fn( hwbinop ) => {
+
+			// utilize hardware intrinsic
+			hwbinop ( args )
+
+		},
+
+		_ => {
+
+			// fallback to generic implementation
+
+			let mut result : i32 = args(0);
+
+			for i in range (1, args.length ) {
+				result = binop ( result, args(i) )
+			}
+
+			result
+		}
+	}
+}
