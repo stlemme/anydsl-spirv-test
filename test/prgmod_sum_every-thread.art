@@ -1,6 +1,12 @@
 
 fn test_prgmod_sum(grid: Group, data: Accessor[data_type], p_result: &mut addrspace(1) i32) -> ()
 {
+	//prgmod_sum_grid(grid, data, p_result);
+	prgmod_sum_group(grid, data, p_result);
+}
+
+fn @prgmod_sum_grid(grid: Group, data: Accessor[data_type], p_result: &mut addrspace(1) i32) -> ()
+{
 	// every thread in grid
 
 	for bidx, block in subgroups(grid) {
@@ -19,5 +25,26 @@ fn test_prgmod_sum(grid: Group, data: Accessor[data_type], p_result: &mut addrsp
 
 			}
 		}
+	}
+}
+
+
+
+fn @prgmod_sum_group(group: Group, data: Accessor[data_type], p_result: &mut addrspace(1) i32) -> ()
+{
+	// every thread in grid
+
+	if group.size == 1 {
+
+		for i in range(0, data.len()) {
+			atomic_add(group, p_result, data.get(i));
+		}
+
+	} else {
+
+		for idx, subgroup in subgroups(group) {
+			prgmod_sum_group(subgroup, make_partition(data, idx, group, subgroup), p_result);
+		}
+
 	}
 }

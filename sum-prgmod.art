@@ -255,19 +255,6 @@ fn @reduce_binop_i32(group: Group, array: Accessor[i32], binop: fn(i32, i32)->i3
 	}
 }
 
-struct TypeTraits[T] {
-	zero: T,
-	 one: T,
-	 add: fn(T, T) -> T,
-	 mul: fn(T, T) -> T,
-}
-
-implicit = TypeTraits[i32] {
-	zero = 0,
-	 one = 1,
-	 add = @|a, b| { a + b },
-	 mul = @|a, b| { a * b },
-};
 /*
 fn @reduce_sum[T](group: Group, array: Accessor[T], implicit tt: TypeTraits[T]) -> T {
 	reduce_binop[T](group, array, tt.add)
@@ -276,8 +263,8 @@ fn @reduce_sum[T](group: Group, array: Accessor[T], implicit tt: TypeTraits[T]) 
 */
 
 fn @reduce_sum(group: Group, array: Accessor[i32]) -> i32 {
-	//reduce_binop[i32](group, array, @|a, b| { a + b })
-	reduce_binop_i32(group, array, @|a, b| { a + b })
+	reduce_binop[i32](group, array, @|a, b| { a + b })
+	//reduce_binop_i32(group, array, @|a, b| { a + b })
 }
 
 
@@ -317,58 +304,6 @@ fn @reduce_sumA(acc: Accelerator, data: Accessor[data_type], num: i32, bs: i32) 
 
 		test_prgmod_sum(grid, data, p_result)
 
-		// every thread in grid
-		/*
-		for bidx, block in subgroups(grid) {
-			// warps
-			for widx, warp in subgroups(block) {
-				// threads
-				for tidx, thread in subgroups(warp) {
-					let gidx = bidx*block.size + widx*warp.size + tidx;
-					if gidx < data.len() {
-						//atomic_add[i32](thread, p_result, data.get(gidx));
-						atomic_add(thread, p_result, data.get(gidx));
-					}
-				}
-			}
-		}
-		*/
-
-		// whole grid
-		//*p_result = reduce_sum(grid, data);
-
-
-
-		// reduce per block, atomic per block
-		/*
-		for bidx, block in subgroups(grid) {
-			let block_result = reduce_sum(block, make_partition(data, bidx, grid, block));
-
-			for _tidx, thread in pick_single_thread(block) {
-				atomic_add(thread, p_result, block_result);
-			}
-		}
-		*/
-
-		// reduce per warp, atomic per warp
-		/*
-		for bidx, block in subgroups(grid) {
-			let bp = make_partition(data, bidx, grid, block);
-
-			// warps
-			for widx, warp in subgroups(block) {
-				let wp = make_partition(bp, widx, block, warp);
-				let warp_result = reduce_sum(warp, wp);
-
-				// threads
-				for tidx, thread in subgroups(warp) {
-					if tidx == 0 {
-						atomic_add(thread, p_result, warp_result);
-					}
-				}
-			}
-		}
-		*/
 	}
 
 	copy(result_dev, result_cpu);

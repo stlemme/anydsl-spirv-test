@@ -84,7 +84,7 @@ foreach(_backend cuda)
         anydsl_runtime_wrap(_program-prgmod-reduction-${_suffix}
             FRONTEND artic
             NAME test-prgmod-reduction-${_suffix}
-            FILES reduction-ref.art reduction-prgmod.art prgmod-common.art prgmod-mapping-${_backend}.art
+            FILES reduction-ref.art reduction-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-${_backend}.art
 			test/prgmod_reduction_${_variant}.art)
         add_executable(test-prgmod-reduction-${_suffix} ${_program-prgmod-reduction-${_suffix}} main.cpp)
         target_link_libraries(test-prgmod-reduction-${_suffix} PRIVATE runtime)
@@ -98,9 +98,9 @@ foreach(_backend cuda)
         anydsl_runtime_wrap(_program-prgmod-sum-${_suffix}
             FRONTEND artic
             NAME test-prgmod-sum-${_suffix}
-            FILES reduction-sum.art sum-prgmod.art prgmod-common.art prgmod-mapping-${_backend}.art
+            FILES reduction-sum.art sum-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-${_backend}.art
 			test/prgmod_sum_${_variant}.art)
-        add_executable(test-prgmod-sum-${_suffix} ${_program-prgmod-sum-${_suffix}} main.cpp)
+        add_executable(test-prgmod-sum-${_suffix} ${_program-prgmod-sum-${_suffix}} test/prgmod_sum_${_variant}.art main.cpp)
         target_link_libraries(test-prgmod-sum-${_suffix} PRIVATE runtime)
 		add_test(NAME test-prgmod-sum-${_suffix} COMMAND test-prgmod-sum-${_suffix})
     endforeach()
@@ -116,4 +116,12 @@ endforeach()
 	# FILES reduction-sum.art  sum-prgmod.art prgmod-common.art prgmod-mapping-cuda.art)
 # add_executable(reduction-sum ${_program_reduction_sum})
 # target_link_libraries(reduction-sum PRIVATE runtime)
+
+
+anydsl_runtime_wrap(_program_matmul
+	FRONTEND artic
+	NAME matmul-prgmod
+	FILES matmul-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-cuda.art)
+add_executable(matmul-prgmod ${_program_matmul} main.cpp)
+target_link_libraries(matmul-prgmod PRIVATE runtime)
 

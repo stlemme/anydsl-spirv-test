@@ -1,0 +1,21 @@
+
+struct TypeTraits[T] {
+	zero: T,
+	 one: T,
+	 add: fn(T, T) -> T,
+	 mul: fn(T, T) -> T,
+}
+
+implicit = TypeTraits[i32] {
+	zero = 0,
+	 one = 1,
+	 add = @|a, b| { a + b },
+	 mul = @|a, b| { a * b },
+};
+
+implicit = TypeTraits[f32] {
+	zero = 0,
+	 one = 1,
+	 add = @|a, b| { a + b },
+	 mul = @|a, b| { a * b },
+};

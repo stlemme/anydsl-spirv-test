@@ -99,7 +99,11 @@ fn @make_cuda_group(body: fn(Group)->()) = @|acc: Accelerator, grid_size: i32, b
 
 	//let mut total:i32 = 0;
 
-	let buffer = acc.alloc(accum_buffer_size as i64);
+	let buffer = if accum_buffer_size > 0 {
+		acc.alloc(accum_buffer_size as i64)
+	} else {
+		Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 }
+	};
 
 	for _ in acc.exec(g, b) {
 		let mut buffer_offset:i32 = 0;
