@@ -547,21 +547,14 @@ fn @matrix_multiplyC(
         }
     }
 
-    fn @create_warp_tensors (warp: Group) {
-        let mut warp_buffers : [[&mut addrspace(3) [c_element_type] * 4] * 2];
-
-        for tile_x in unroll(0, warp_x_tiles) {
-            for tile_y in unroll(0, warp_y_tiles) {
-                let buffer = reserve_shared[c_element_type](256);
-                warp_buffers(tile_x)(tile_y) = buffer;
-            }
-        }
-
+    fn @create_warp_tensors (widx: i32, warp: Group) {
         let mut warp_tensors : [[WMMA * 4] * 2];
 
         for tile_x in unroll(0, warp_x_tiles) {
             for tile_y in unroll(0, warp_y_tiles) {
-                let buffer = warp_buffers(tile_x)(tile_y);
+                let mut acc_fragment : [c_element_type * 256];
+                let buffer = bitcast[&mut addrspace(3) [c_element_type]](&acc_fragment(0));
+
                 warp_tensors(tile_x)(tile_y) = create_wmma(warp, buffer);
             }
         }
@@ -579,7 +572,7 @@ fn @matrix_multiplyC(
 
         for widx, warp in subgroups(block) {
 
-            let warp_tensors = @create_warp_tensors(warp);
+            let warp_tensors = @create_warp_tensors(widx, warp);
 
             let warp_x = (widx % block_x_warps) * warp_size_x;
             let warp_y = (widx / block_x_warps) * warp_size_y;
