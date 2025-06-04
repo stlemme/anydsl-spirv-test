@@ -547,17 +547,33 @@ fn @matrix_multiplyC(
         }
     }
 
-    fn @create_warp_tensors (widx: i32, warp: Group) {
-        let mut warp_tensors : [[WMMA * 4] * 2];
-
-        for tile_x in unroll(0, warp_x_tiles) {
-            for tile_y in unroll(0, warp_y_tiles) {
-                let mut acc_fragment : [c_element_type * 256];
-                let buffer = bitcast[&mut addrspace(3) [c_element_type]](&acc_fragment(0));
-
-                warp_tensors(tile_x)(tile_y) = create_wmma(warp, buffer);
+    fn @create_warp_tensors (_widx: i32, warp: Group) {
+        let mut inner_warp_tensors = @|_tile : i32| -> WMMA {
+            WMMA {
+                tile_size_k = 0,
+                 load_a = @|_a| {},
+                 load_b = @|_b| {},
+                 load_c = @|_c| {},
+                   wmma = @||   {},
+                store_d = @|_d| {},
             }
+        };
+
+        for _tile in unroll(0, warp_x_tiles * warp_y_tiles) {
+            let mut acc_fragment : [c_element_type * 256];
+            let buffer = bitcast[&mut addrspace(3) [c_element_type]](&acc_fragment(0));
+            let new_wmma = create_wmma(warp, buffer);
+
+            let inner_warp_tensors_nomut = inner_warp_tensors;
+            inner_warp_tensors = @|tile : i32| -> WMMA {
+                if tile == 0 { new_wmma } else { inner_warp_tensors_nomut(tile - 1) }
+            };
         }
+
+        let inner_warp_tensors_nomut = inner_warp_tensors;
+        let warp_tensors = @|tile_x : i32| { @|tile_y : i32| {
+            inner_warp_tensors_nomut(tile_x * warp_y_tiles + tile_y)
+        }};
 
         warp_tensors
     }
