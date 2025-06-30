@@ -3,7 +3,12 @@ enum GroupType {
 	CUDAGrid(i32),
 	CUDABlock,
 	CUDAWarp,
-	CUDAThread
+	CUDAThread,
+
+	NVVMGrid(i32),
+	NVVMBlock,
+	NVVMWarp,
+	NVVMThread
 }
 
 /*
@@ -19,11 +24,9 @@ enum Op[S, T] {
 }
 
 struct GroupIntrinsics {
-	barrier_any: Op[Accessor[u8],  u8] = Op[Accessor[u8],  u8]::Generic,
-	shuffle_i32: Op[   (i32,i32), i32] = Op[   (i32,i32), i32]::Generic,
-	//wmma_load:
-	//wmma_mma:
-	//wmma_store:
+	barrier_any: Op[Accessor[u8],   u8] = Op[Accessor[u8],   u8]::Generic,
+	shuffle_i32: Op[   (i32,i32),  i32] = Op[   (i32,i32),  i32]::Generic,
+	wmma:        Op[          (), WMMA] = Op[          (), WMMA]::Generic,
 }
 
 struct Group {

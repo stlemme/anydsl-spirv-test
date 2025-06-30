@@ -76,7 +76,7 @@ target_link_libraries(copy-multi-gpu PRIVATE runtime)
 # target_link_libraries(reduction-ref PRIVATE runtime)
 
 
-foreach(_backend cuda)
+foreach(_backend cuda nvvm)
     foreach(_variant single-thread single-warp single-block whole-grid)
         set(_suffix "${_variant}-${_backend}")
         # set(_config_file ${CMAKE_CURRENT_BINARY_DIR}/reserve_shared-config-${_suffix}.art)
@@ -121,7 +121,7 @@ endforeach()
 anydsl_runtime_wrap(_program_matmul
 	FRONTEND artic
 	NAME matmul-prgmod
-	FILES matmul-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-cuda.art)
+	FILES matmul-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art)
 add_executable(matmul-prgmod ${_program_matmul} main.cpp)
 target_link_libraries(matmul-prgmod PRIVATE runtime)
 
