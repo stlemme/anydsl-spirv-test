@@ -18,7 +18,7 @@ fn main() -> {
 
 	}
 
-	gpu_schedule = make_tiled_gpu_group(4, 2, 16x16)
+	//gpu_schedule = make_tiled_gpu_group(4, 2, 16x16)
 
 	let cpu_options = { vecwidth = 32 }; // favor
 	for cpu_threads in make_cpu_group(num_threads, cpu_options) {
@@ -27,11 +27,11 @@ fn main() -> {
 
 	}
 
-	with cpu_group(num_threads, cpu_options) as cpu_threads {
-
-		my_prgmod_algo_A(cpu_threads, data, result)
-
-	}
+	//with cpu_group(num_threads, cpu_options) as cpu_threads {
+	//
+	//	my_prgmod_algo_A(cpu_threads, data, result)
+	//
+	//}
 
 	//let cpu_threads = make_cpu_group(num_threads, cpu_options);
 	//my_prgmod_algo_A(cpu_threads, data, result);
@@ -44,8 +44,83 @@ fn main() -> {
 
 	}
 
-}
 
+	///////////////////
+
+	for gpu_grid in make_nvvm_group(grid_size, block_size, gpu_options) {
+
+		my_prgmod_algo_A(gpu_grid, data, result);
+
+	}
+
+	// add one level of subgroup
+	fn make_tiled_group(group, num_tiles) -> Group { }
+
+	// setup kernel with num_subgroups
+	fn make_nvvm_group(group, num_subgroups) -> Group { }
+
+	let num_threads = 32; // or 64 if supported
+	let num_blocks = gpu_mp_count;
+
+	let warp = make_warp(num_threads);
+	let warp_stripe = make_tiled_group(warp, 4);
+	let block = make_tiled_group(warp_stripe, 2);
+	//let block = make_block(warp_stripe, 2);
+	//let warp_stripe_y = make_tiled_group(warp_stripe, 2);
+	//let block = make_block(warp_stripe_y);
+	let grid1 = make_nvvm_group(block, num_blocks);
+
+	let grid2 = make_nvvm_group(num_blocks,
+		make_tiled_group(2,
+			make_tiled_group(4,
+				make_warp(num_threads)
+			)
+		)
+	);
+
+	let num_warps = gpu_mp_count * gpu_max_parallel_warps_per_smp;
+	let grid3 = make_nvvm_group(warp, num_warps);
+
+	let block = make_block(block_size);
+	let grid4 = make_nvvm_group(block, num_blocks);
+
+	///////////////////
+
+	// from phalanx we know:
+	//  - phalanx::domain<Policy,SubDom>
+	//  - streaming_group
+	//  - parallel_group
+
+	template <typename Platform>
+    void saxpy(
+		domain<streaming_group<>,
+            thread<Platform>> group,
+        float a, int n,
+        ptr<float> x, ptr<float> y)
+    {
+        int i = group.subdomain().index();
+        if (i<n) y[i] = a * x[i] + y[i];
+    }
+
+	// domain<streaming_group<thread<sm>>>
+	// domain<streaming_group, domain<parallel_group, thread<sm>>>
+
+    // domain<streaming_group,
+    //   domain<streaming_group,
+    //     domain<parallel_group,
+    //       thread<sm> > > >;
+
+	///////////////////
+
+	// from Halide we know:
+	//  - SPLIT domain into inner and outer
+	//  - FUSE two domains into one
+	//  - REORDER domains
+	//  - VECTORIZE
+	//  - UNROLL
+	//  - PARALLELIZE
+
+}
 
 
 fn my_prgmod_algo_A ( group : Group, args : ... ) -> () {
