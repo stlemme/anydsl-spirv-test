@@ -736,8 +736,7 @@ fn @matrix_multiplyC(
     let bs = threads_per_block;
     let scratchpad_size = 0;
 
-    /*
-	for grid in make_cuda_group(acc, num, bs, scratchpad_size) {
+	for grid in make_nvvm_group(acc, num, bs, scratchpad_size) {
 
         // blocks
 		for bidx, block in subgroups(grid) {
@@ -756,7 +755,6 @@ fn @matrix_multiplyC(
             }
         }
     }
-    */
 
 }
 
