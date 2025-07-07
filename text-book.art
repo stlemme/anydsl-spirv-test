@@ -94,7 +94,7 @@ fn main() -> {
 	template <typename Platform>
     void saxpy(
 		domain<streaming_group<>,
-            thread<Platform>> group,
+            thread<Platform>> group,		// this implementation as given here can only be launched on blocks of threads
         float a, int n,
         ptr<float> x, ptr<float> y)
     {
@@ -119,6 +119,125 @@ fn main() -> {
 	//  - VECTORIZE
 	//  - UNROLL
 	//  - PARALLELIZE
+
+
+
+	let gpu_group = make_group(some_cuda_device);
+
+	gpu_group.warp_size(32);
+	gpu_group.warps_per_block(16);
+
+	my_prgmod_algo_A(gpu_group, data, result);
+
+
+
+
+	let gpu_group = make_group(some_cuda_device);
+
+	gpu_group.block_size(256);
+	gpu_group.num_blocks(64);
+
+	my_prgmod_algo_A(gpu_group, data, result);
+
+
+
+	let gpu_group = make_group(some_cuda_device, {
+		block_size: 256,
+		num_blocks: 64
+	});
+
+	my_prgmod_algo_B(gpu_group, data, result);
+
+
+	let gpu_group1 = make_group(some_gpu_device_with_usm_support);
+	let gpu_group2 = make_group(some_other_gpu_device_with_usm_support);
+
+	let multi_gpu_group = merge_groups(gpu_group1, gpu_group2);
+
+	my_prgmod_algo_B(multi_gpu_group, data, result);
+
+
+	////////////////////////////////////////////////////////
+
+	let cpu_group = make_group(some_cpu_node);
+
+	cpu_group.vectorize(128);
+	cpu_group.parallelize(64);
+
+	my_prgmod_algo_A(cpu_group, data, result);
+
+
+	let cpu_groups = partition_group(cpu_group, {num_total_subgroups: 2});
+
+	my_prgmod_algo_A(cpu_groups(0), data, result);
+	my_prgmod_algo_B(cpu_groups(1), data, result);
+
+
+	////////////////////////////////////////////////////////
+
+
+	fn saxpy(group: Group, a: f32, x: Accessor[f32], y: Accessor[f32]) -> () {
+
+		for idx, thread in threads(group) {
+			let i = idx;
+			let n = y.len();
+			// this covers only the case we have more threads in our group than work items
+			if (i < n) {
+				y.set(i, a * x.get(i) + y.get(i));
+			}
+		}
+
+	}
+
+
+	fn better_saxpy[T](group: Group, a: T, x: Accessor[T], y: Accessor[T]) -> () {
+
+		for idx, thread in threads(group) {
+			let i = idx;
+			let n = y.len();
+			// each thread may process multiple work items
+			for j in range_step(i, n, group.size) {
+				y.set(j, a * x.get(j) + y.get(j));
+			}
+		}
+
+	}
+
+
+	fn my_prgmod_algo_A(group: Group, a: f32, x: Accessor[f32], y: Accessor[f32]) -> () {
+
+		for idx, subgroup in subgroups(group) {
+			// do something per subgroup
+
+			// utilize better_saxpy() with a subgroup - no matter of subgroup's actual size
+			better_saxpy[f32](subgroup, a, x, y);
+
+		}
+
+	}
+
+
+	fn my_prgmod_algo_B(group: Group, x: Accessor[f32], y: Accessor[f32]) -> () {
+
+		for idx, warp in split_into_warps(group) {
+			for i, thread in threads(warp) {
+				// do something for each thread in a warp
+			}
+		}
+
+		for idx, block in split_into_blocks(group) {
+			for i, thread in threads(block) {
+				// do something for each thread in a block
+			}
+
+			for idx, warp in split_into_warps(group) {
+				for i, thread in threads(warp) {
+					// do something for each thread in a warp of the same block
+				}
+			}
+		}
+
+	}
 
 }
 
