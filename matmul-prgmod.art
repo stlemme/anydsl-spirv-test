@@ -1,8 +1,5 @@
 
 
-type a_element_type = f16;
-type b_element_type = f16;
-type c_element_type = f16;
 
 // medium
 /*
@@ -29,45 +26,6 @@ static tile_size_y = 16;
 static tile_size_k = 16;
 
 
-enum AddrMode {
-    RowMajor,
-    ColMajor
-}
-
-struct Tensor[T] {
-    data : &mut [T],
-    x_dim : i32,
-    y_dim : i32,
-    addr_mode : AddrMode,
-    stride : i32 //row to row offset for this matrix.
-}
-
-fn @addr_tensor[T] (x : i32, y : i32, t : Tensor[T]) = match t.addr_mode {
-    AddrMode::RowMajor => x + y * t.stride,
-    AddrMode::ColMajor => x * t.stride + y
-};
-
-fn @sub_tensor[T](t : Tensor[T], x0 : i32, y0 : i32, xs : i32, ys : i32) =
-    Tensor[T] {data = bitcast [&mut [T]](&t.data(addr_tensor[T](x0, y0, t))),
-                x_dim = xs,
-                y_dim = ys,
-                addr_mode = t.addr_mode,
-                stride = t.stride
-              };
-
-struct Convert[T, V] { apply: fn(T)->V }
-implicit = Convert[f32, f32] { apply = @|x| x };
-implicit = Convert[f16, f32] { apply = @|x| x as f32 };
-implicit = Convert[f32, f16] { apply = @|x| x as f16 };
-
-fn @tensor_read[V, T](x: i32, y: i32, t: Tensor[T], implicit convert: Convert[T, V]) -> V {
-    let value = t.data(addr_tensor(x, y, t));
-    convert.apply(value)
-}
-
-fn @tensor_write[V, T](x: i32, y: i32, t: Tensor[T], value: V, implicit convert: Convert[V, T]) -> () {
-    t.data(addr_tensor(x, y, t)) = convert.apply(value);
-}
 
 
 //struct WMMAOperations [mat_a_type, mat_b_type, acc_type] {
@@ -77,16 +35,6 @@ fn @tensor_write[V, T](x: i32, y: i32, t: Tensor[T], value: V, implicit convert:
 //    wmma : fn (mat_a_type, AddrMode, mat_b_type, AddrMode, acc_type, AddrMode) -> acc_type,
 //    store_d : fn (Tensor[c_element_type], acc_type) -> ()
 //}
-
-
-struct WMMA {
-    tile_size_k: i32,
-    load_a: fn(Tensor[a_element_type]) -> (),
-    load_b: fn(Tensor[b_element_type]) -> (),
-    load_c: fn(Tensor[c_element_type]) -> (),
-    wmma: fn() -> (),
-    store_d: fn(Tensor[c_element_type]) -> (),
-}
 
 
 fn @matrix_multiplyA(

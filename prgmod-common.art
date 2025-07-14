@@ -23,6 +23,15 @@ enum Op[S, T] {
 	Generic
 }
 
+struct WMMA {
+    tile_size_k: i32,
+    load_a: fn(Tensor[a_element_type]) -> (),
+    load_b: fn(Tensor[b_element_type]) -> (),
+    load_c: fn(Tensor[c_element_type]) -> (),
+    wmma: fn() -> (),
+    store_d: fn(Tensor[c_element_type]) -> (),
+}
+
 struct GroupIntrinsics {
 	barrier_any: Op[Accessor[u8],   u8] = Op[Accessor[u8],   u8]::Generic,
 	shuffle_i32: Op[   (i32,i32),  i32] = Op[   (i32,i32),  i32]::Generic,
@@ -47,6 +56,21 @@ struct Accessor[T] {
 	len: fn() -> i32
 }
 
+fn @make_array_from_buffer[T](buffer: Buffer) -> Accessor[T] {
+    let ptr = bitcast[&mut [T]](buffer.data);
+    let num = buffer.size / sizeof[T]();
+
+    Accessor[T] {
+		get = @|i| {
+			ptr(i)
+		},
+		set = @|i, val| {
+			ptr(i) = val;
+		},
+		len = || num as i32
+	}
+}
+
 fn @make_partition[T](array: Accessor[T], idx: i32, _group: Group, subgroup: Group) -> Accessor[T] {
 	let offset = idx * subgroup.size;
 
@@ -59,6 +83,41 @@ fn @make_partition[T](array: Accessor[T], idx: i32, _group: Group, subgroup: Gro
 		}, 
 		len = || subgroup.size
 	}
+}
+
+enum AddrMode {
+    RowMajor,
+    ColMajor
+}
+
+struct Tensor[T] {
+    data : &mut [T],
+    x_dim : i32,
+    y_dim : i32,
+    addr_mode : AddrMode,
+    stride : i32 //row to row offset for this matrix.
+}
+
+fn @addr_tensor[T] (x : i32, y : i32, t : Tensor[T]) = match t.addr_mode {
+    AddrMode::RowMajor => x + y * t.stride,
+    AddrMode::ColMajor => x * t.stride + y
+};
+
+fn @sub_tensor[T](t : Tensor[T], x0 : i32, y0 : i32, xs : i32, ys : i32) =
+    Tensor[T] {data = bitcast [&mut [T]](&t.data(addr_tensor[T](x0, y0, t))),
+                x_dim = xs,
+                y_dim = ys,
+                addr_mode = t.addr_mode,
+                stride = t.stride
+              };
+
+fn @tensor_read[V, T](x: i32, y: i32, t: Tensor[T], implicit convert: Convert[T, V]) -> V {
+    let value = t.data(addr_tensor(x, y, t));
+    convert.apply(value)
+}
+
+fn @tensor_write[V, T](x: i32, y: i32, t: Tensor[T], value: V, implicit convert: Convert[V, T]) -> () {
+    t.data(addr_tensor(x, y, t)) = convert.apply(value);
 }
 
 
@@ -74,4 +133,24 @@ fn @pick_single_thread(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
 			@body(0, group)
 		}
 	}
+}
+
+fn @each_thread(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
+
+	fn @inner_loop(offset: i32, group: Group)->() {
+		if group.size > 1 {
+			for idx, subgroup in subgroups(group) {
+				// TODO: this assumes equally sized subgroups
+				// TODO: this may break in multi-device and heterogenous setups
+				inner_loop(offset + idx*subgroup.size, subgroup)
+			}
+		} else {
+			@body(offset, group)
+		}
+	}
+
+	@|group| {
+		inner_loop(0, group)
+	}
+
 }

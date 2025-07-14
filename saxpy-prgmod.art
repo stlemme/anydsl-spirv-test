@@ -1,0 +1,191 @@
+
+
+type element_type = f32;
+
+static N = 4096;
+
+
+fn saxpy(
+    group: Group,
+    a: element_type,
+    x: Accessor[element_type],
+    y: Accessor[element_type]
+) -> () {
+
+	for idx, _thread in each_thread(group) {
+		let i = idx;
+		let n = y.len();
+		// this covers only the case we have more threads in our group than work items
+		if (i < n) {
+			y.set(i, a * x.get(i) + y.get(i));
+		}
+	}
+
+}
+
+fn better_saxpy_element_type(
+    group: Group,
+    a: element_type,
+    x: Accessor[element_type],
+    y: Accessor[element_type]
+) -> () {
+
+	for idx, _thread in each_thread(group) {
+		let i = idx;
+		let n = y.len();
+		// each thread may process multiple work items
+		for j in range_step(i, n, group.size) {
+			y.set(j, a * x.get(j) + y.get(j));
+		}
+	}
+
+}
+
+
+fn better_saxpy[T](
+    group: Group,
+    a: T,
+    x: Accessor[T],
+    y: Accessor[T],
+    implicit tt: TypeTraits[T]
+) -> () {
+
+	for idx, _thread in each_thread(group) {
+		let i = idx;
+		let n = y.len();
+		// each thread may process multiple work items
+		for j in range_step(i, n, group.size) {
+            let ax = tt.mul(a, x.get(j));
+			y.set(j, tt.add(ax, y.get(j)));
+		}
+	}
+
+}
+
+
+/*
+fn better_saxpy[T](group: Group, a: T, x: Accessor[T], y: Accessor[T]) -> () {
+
+	for idx in each_element_in_domain(y, group) {
+		let i = idx;
+		y.set(i, a * x.get(i) + y.get(i));
+	}
+
+}
+*/
+
+fn saxpy_naive (
+    a : element_type,
+    x : Accessor[element_type],
+    y : Accessor[element_type]
+) -> () {
+
+    let outer_loop = @|body:fn(i32)->()| @|b:i32, e:i32| range(body)(b, e);
+    //let outer_loop = @|body:fn(i32)->()| @|b:i32, e:i32| parallel(body)(0, b, e);
+
+    for i in outer_loop(0, y.len()) {
+        y.set(i, a * x.get(i) + y.get(i));
+    }
+}
+
+#[export]
+fn entry_fn() -> i32 {
+    //let acc = cuda_accelerator(0);
+    let acc = nvvm_accelerator(0);
+
+    let acc_saxpy = @|a : element_type, x : Accessor[element_type], y : Accessor[element_type]| {
+        let bs = 128;
+        let num = 8 * bs;
+        let scratchpad_size = 0;
+
+	    for grid in make_nvvm_group(acc, num, bs, scratchpad_size) {
+            better_saxpy_element_type(grid, a, x, y);
+        }
+
+        //let group = make_group(acc);
+        //better_saxpy_element_type(group, a, x, y);
+    };
+	let ref_saxpy = saxpy_naive;
+
+    // Produce data set on host
+    let x_cpu_buffer = alloc_cpu(sizeof[element_type]() * N as i64);
+    let y_cpu_buffer = alloc_cpu(sizeof[element_type]() * N as i64);
+    let r_cpu_buffer = alloc_cpu(sizeof[element_type]() * N as i64);
+
+    let x_cpu_array = make_array_from_buffer[element_type](x_cpu_buffer);
+    let y_cpu_array = make_array_from_buffer[element_type](y_cpu_buffer);
+    let r_cpu_array = make_array_from_buffer[element_type](r_cpu_buffer);
+
+    for n in range(0, N) { x_cpu_array.set(n, random_float[element_type]()); }
+    for n in range(0, N) { y_cpu_array.set(n, random_float[element_type]()); }
+
+    let a_value = random_float[element_type]();
+
+    // Copy data to device
+    let x_dev_buffer = acc.alloc(sizeof[element_type]() * N as i64);
+    let y_dev_buffer = acc.alloc(sizeof[element_type]() * N as i64);
+
+    copy(x_cpu_buffer, x_dev_buffer);
+    copy(y_cpu_buffer, y_dev_buffer);
+    copy(y_cpu_buffer, r_cpu_buffer);
+
+    let x_dev_array = make_array_from_buffer[element_type](x_dev_buffer);
+    let y_dev_array = make_array_from_buffer[element_type](y_dev_buffer);
+
+    print_string("prgmod saxpy:\n");
+    acc.sync();
+    let acc_start = get_kernel_time();
+
+    acc_saxpy(a_value, x_dev_array, y_dev_array);
+
+    acc.sync();
+    let acc_end = get_kernel_time();
+    print_string("Done!\n");
+    if (acc_end - acc_start > 0) {
+        print_string("Took ");
+        print_i64(acc_end - acc_start);
+        print_string("us\n");
+    }
+
+    // Fetch result
+    copy(y_dev_buffer, y_cpu_buffer);
+
+    // Ref implementation
+    print_string("CPU variant:\n");
+    let cpu_start = get_micro_time();
+    ref_saxpy(a_value, x_cpu_array, r_cpu_array);
+    let cpu_end = get_micro_time();
+    print_string("Done!\n");
+    if (cpu_end - cpu_start > 0) {
+        print_string("Took ");
+        print_i64(cpu_end - cpu_start);
+        print_string("us\n");
+    }
+
+    for i in range(0, r_cpu_array.len()) {
+        r_cpu_array.set(i, r_cpu_array.get(i) - y_cpu_array.get(i));
+    }
+
+    release(x_dev_buffer);
+    release(y_dev_buffer);
+
+    release(x_cpu_buffer);
+    release(y_cpu_buffer);
+
+    let mut max_error = 0 as f32;
+    for i in range(0, r_cpu_array.len()) {
+        max_error = cpu_intrinsics.fmaxf(max_error, fabs[element_type](r_cpu_array.get(i)));
+    }
+
+    release(r_cpu_buffer);
+
+    print_string("Max error: ");
+    print_f32(max_error);
+    print_string("\n");
+
+    if (max_error < (0.01 as f32)) {
+        0
+    } else {
+        1
+    }
+}

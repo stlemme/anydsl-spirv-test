@@ -64,8 +64,8 @@ fn main() -> {
 
 	let warp = make_warp(num_threads);
 	let warp_stripe = make_tiled_group(warp, 4);
-	let block = make_tiled_group(warp_stripe, 2);
-	//let block = make_block(warp_stripe, 2);
+	//let block = make_tiled_group(warp_stripe, 2);
+	let block = make_block(warp_stripe, 2);
 	//let warp_stripe_y = make_tiled_group(warp_stripe, 2);
 	//let block = make_block(warp_stripe_y);
 	let grid1 = make_nvvm_group(block, num_blocks);
@@ -130,18 +130,67 @@ fn main() -> {
 	my_prgmod_algo_A(gpu_group, data, result);
 
 
+	struct Group {
+		size: i32,
+		subgroups: fn()
+	};
 
+	struct GPUGroup {
+		base: Group,
+		block_size: fn(i32)->(),
+		num_blocks: fn(i32)->()
+	};
+
+	struct ConvertToGroup[CG] {
+		convert: fn(CG) -> Group
+	};
+
+	implicit = struct ConvertToGroup[GPUGroup] {
+		convert: |gpu_group| { gpu_group.base }
+	};
+
+	fn make_group[D, G](device: D) -> G {
+		let mut block_size = 256;
+		let mut num_blocks = 92; // auto detect num SMs for device
+
+		let group = Group {
+			// other group members
+			subgroups: || {
+				// launch kernel using block_size and num_blocks
+			}
+		};
+
+		GPUGroup {
+			base: group,
+			block_size: |bs| { block_size = bs; },
+			// etc.
+		}
+	}
+
+	/*
+	// not valid code
+	struct Foo {
+		foo: fn(i32) -> Foo,
+		bar: fn(32) -> Foo
+	};
+	*/
 
 	let gpu_group = make_group(some_cuda_device);
 
-	gpu_group.block_size(256);
+	// might be tricky to implement in a typesafe way
+	//gpu_group.block_size(256);
 	gpu_group.num_blocks(64);
+	gpu_group.warps_per_block(32);
+	gpu_group.warp_size(32);
+
+	// this is not possible at the moment
+	// gpu_group.block_size(256).num_blocks(64);
 
 	my_prgmod_algo_A(gpu_group, data, result);
 
 
 
-	let gpu_group = make_group(some_cuda_device, {
+	let gpu_group = make_group(some_cuda_device, GroupOptions {
 		block_size: 256,
 		num_blocks: 64
 	});
@@ -175,7 +224,6 @@ fn main() -> {
 
 	////////////////////////////////////////////////////////
 
-
 	fn saxpy(group: Group, a: f32, x: Accessor[f32], y: Accessor[f32]) -> () {
 
 		for idx, thread in threads(group) {
@@ -198,6 +246,29 @@ fn main() -> {
 			// each thread may process multiple work items
 			for j in range_step(i, n, group.size) {
 				y.set(j, a * x.get(j) + y.get(j));
+			}
+		}
+
+	}
+
+	fn better_saxpy[T](group: Group, a: T, x: Accessor[T], y: Accessor[T]) -> () {
+
+		for idx in each_element_in_domain(y, group) {
+			let i = idx;
+			y.set(i, a * x.get(i) + y.get(i));
+		}
+
+	}
+
+
+	fn saxpy[G](group: G, a: f32, x: Accessor[f32], y: Accessor[f32], implicit conv: ConvertToGroup[G]) -> () {
+
+		for idx, thread in threads(conv.convert(group)) {
+			let i = idx;
+			let n = y.len();
+			// this covers only the case we have more threads in our group than work items
+			if (i < n) {
+				y.set(i, a * x.get(i) + y.get(i));
 			}
 		}
 
@@ -230,7 +301,7 @@ fn main() -> {
 				// do something for each thread in a block
 			}
 
-			for idx, warp in split_into_warps(group) {
+			for idx, warp in split_into_warps(block) {
 				for i, thread in threads(warp) {
 					// do something for each thread in a warp of the same block
 				}
@@ -238,6 +309,43 @@ fn main() -> {
 		}
 
 	}
+
+	////////////////////////////////////////////////////////
+
+	let dev = cuda_device;
+
+	let n = 1050;
+
+	let x = dev.alloc(n);
+	let y = dev.alloc(n);
+
+	let group = make_group(dev);
+
+	better_saxpy(group, 2.f, x, y);
+
+
+	////////////////////////////////////////////////////////
+
+	let matmul = make_matmul[f16, f32](MatmulOptions {
+		tile_m: 16, tile_n: 16, tile_k: 16,
+		tiles_per_warp: (4, 2)
+	});
+
+	let dev = cuda_device;
+
+	let A = dev.alloc(tensor_size); // 4x, B, C, D
+
+	let group = make_group(dev);
+
+	group.warps_per_block(8);
+
+	fill_random(group, A);
+	fill_random(group, B);
+	fill_random(group, C);
+
+	matmul(group, A, B, C, D);
+
+	////////////////////////////////////////////////////////
 
 }
 

@@ -125,3 +125,11 @@ anydsl_runtime_wrap(_program_matmul
 add_executable(matmul-prgmod ${_program_matmul} main.cpp)
 target_link_libraries(matmul-prgmod PRIVATE runtime)
 
+
+anydsl_runtime_wrap(_program_saxpy
+	FRONTEND artic
+	NAME saxpy-prgmod
+	FILES saxpy-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art)
+add_executable(saxpy-prgmod ${_program_saxpy}  saxpy-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art main.cpp)
+target_link_libraries(saxpy-prgmod PRIVATE runtime)
+
