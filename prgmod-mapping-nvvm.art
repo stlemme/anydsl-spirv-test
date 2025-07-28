@@ -1,6 +1,19 @@
 
 static warp_size:i32 = 32;
 
+fn nvvm_thread_intrinsics() = GroupIntrinsics {
+};
+
+fn nvvm_warp_intrinsics() = GroupIntrinsics {
+	barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
+	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
+	wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+};
+
+fn nvvm_block_intrinsics() = GroupIntrinsics {
+	barrier_any = Op[Accessor[u8], u8]::Fn(nvvm_block_barrier_any)
+};
+
 
 fn @make_nvvm_thread(_idx: i32) -> Group {
 	Group {
@@ -15,8 +28,8 @@ fn @make_nvvm_thread(_idx: i32) -> Group {
 			@body(idx, thread)
 		},
 		num_subgroups = 1,
-		specific = GroupType::NVVMThread,
-		intrinsics = GroupIntrinsics { }
+		specific = GroupType::Thread,
+		intrinsics = nvvm_thread_intrinsics()
 	}
 }
 
@@ -43,6 +56,8 @@ fn @nvvm_warp_shuffle_i32(value: i32, src_lane: i32) -> i32 {
 // TODO: slice a warp into sub warps
 
 fn @make_nvvm_warp(_idx: i32, _num_warps_per_block: i32) -> Group {
+	let tile_size_k = 16;
+
 	Group {
 		size = warp_size,
 		alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
@@ -53,11 +68,8 @@ fn @make_nvvm_warp(_idx: i32, _num_warps_per_block: i32) -> Group {
 			@body(idx, thread)
 		},
 		num_subgroups = warp_size,
-		specific = GroupType::NVVMWarp,
-		intrinsics = GroupIntrinsics {
-			barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
-			//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
-		}
+		specific = GroupType::Warp,
+		intrinsics = nvvm_warp_intrinsics()
 	}
 }
 
@@ -76,7 +88,7 @@ fn @make_nvvm_block(_idx: i32, block_size: i32) -> Group {
 
 	Group {
 		size = block_size,
-		alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+		alloc = @|size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
 		barrier = @|| { nvvm_block_sync() },
 		subgroups = @|body| @|| {
 			let idx = nvvm_read_ptx_sreg_tid_x() / warp_size;
@@ -84,183 +96,67 @@ fn @make_nvvm_block(_idx: i32, block_size: i32) -> Group {
 			@body(idx, warp)
 		},
 		num_subgroups = num_warps_per_block,
-		specific = GroupType::NVVMBlock,
-		intrinsics = GroupIntrinsics {
-			barrier_any = Op[Accessor[u8], u8]::Fn(nvvm_block_barrier_any)
+		specific = GroupType::Block,
+		intrinsics = nvvm_block_intrinsics()
+	}
+}
+
+struct NVVM {
+	device_id: i32,
+	grid_size: fn(i32) -> (),
+	block_size: fn(i32) -> (),
+	warps_per_block: fn(i32) -> ()
+}
+
+fn nvvm_device(idx: i32) -> Device[NVVM] {
+	let acc = nvvm_accelerator(idx);
+
+	let mut grid_size = 2048;
+	let block_size = 256; // changing this to a mutable variable breaks compile
+
+	let buffer = Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 };
+	let mut buffer_offset:i32 = 0;
+
+	let nvvm = NVVM {
+		device_id = idx,
+		grid_size = @|num| { grid_size = num; },
+		block_size = @|bs| { /* block_size = bs; */ },
+		warps_per_block = @|num| { /* block_size = num * warp_size; */ }
+	};
+
+	Device[NVVM] {
+		platform = nvvm,
+		alloc = @|size| acc.alloc(size),
+		root = @|| 	Group {
+			size = grid_size,
+			subgroups = @|body| @|| {
+				print_string("grid_size: "); print_i32(grid_size);
+				for _ in acc.exec(( grid_size, 1, 1), (block_size, 1, 1)) {
+
+					let idx = nvvm_read_ptx_sreg_ctaid_x();
+					let block = make_nvvm_block(idx, block_size);
+
+					@body(idx, block)
+				}
+			},
+			alloc = @|size| {
+				let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
+				//buffer_offset += size;
+				ptr
+			},
+			barrier = @|| { acc.sync(); },
+			num_subgroups = (grid_size + block_size - 1) / block_size,
+			specific = GroupType::Grid,
+			intrinsics = GroupIntrinsics { }
 		}
 	}
 }
 
 
-fn @make_nvvm_group(body: fn(Group)->()) = @|acc: Accelerator, grid_size: i32, block_size: i32, accum_buffer_size: i32| {
-
-	let g = ( grid_size, 1, 1);
-	let b = (block_size, 1, 1);
-
-	let num_blocks = (grid_size + block_size - 1) / block_size;
-
-	//let mut total:i32 = 0;
-
-	let buffer = if accum_buffer_size > 0 {
-		acc.alloc(accum_buffer_size as i64)
-	} else {
-		Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 }
-	};
-
-	for _ in acc.exec(g, b) {
-		let mut buffer_offset:i32 = 0;
-
-		let group = Group {
-			size = grid_size,
-			subgroups = @|body| @|| {
-				let idx = nvvm_read_ptx_sreg_ctaid_x();
-				let block = make_nvvm_block(idx, block_size);
-				@body(idx, block)
-			},
-			alloc = @|size| {
-				let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
-				buffer_offset += size;
-				ptr
-			},
-			barrier = @|| { /* acc.sync() */ },
-			num_subgroups = num_blocks,
-			specific = GroupType::NVVMGrid(block_size),
-			intrinsics = GroupIntrinsics { }
-		};
-
-		body(group)
-	}
-	
-	release(buffer);
-};
-
-/*
-fn @make_group(acc: Accelerator) {
-	let grid_size = 2048;
-	let block_size = 128;
-	let accum_buffer_size = 0;
-
-	let g = ( grid_size, 1, 1);
-	let b = (block_size, 1, 1);
-
-	let num_blocks = (grid_size + block_size - 1) / block_size;
-
-	//let mut total:i32 = 0;
-
-	let buffer = if accum_buffer_size > 0 {
-		acc.alloc(accum_buffer_size as i64)
-	} else {
-		Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 }
-	};
-
-	for _ in acc.exec(g, b) {
-		let mut buffer_offset:i32 = 0;
-
-		let group = Group {
-			size = grid_size,
-			subgroups = @|body| @|| {
-				let idx = nvvm_read_ptx_sreg_ctaid_x();
-				let block = make_nvvm_block(idx, block_size);
-				@body(idx, block)
-			},
-			alloc = @|size| {
-				let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
-				buffer_offset += size;
-				ptr
-			},
-			barrier = @|| {  },
-			num_subgroups = num_blocks,
-			specific = GroupType::NVVMGrid(block_size),
-			intrinsics = GroupIntrinsics { }
-		};
-
-		body(group)
-	}
-	
-	//release(buffer);
-};
-*/
-
 fn @nvvm_pred(b: bool) -> i32 {
 	if b { 1 } else { 0 }
 }
 
-type SubGroup = Group;
-
-fn @subgroups(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
-	@|group| {
-
-		let (idx, subgroup) = match (group.specific) {
-			GroupType::NVVMGrid(block_size) => {
-				let idx = nvvm_read_ptx_sreg_ctaid_x();
-				let num_warps_per_block = (block_size + warp_size - 1) / warp_size;
-				let block = Group { size = block_size,
-					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
-					barrier = @|| { nvvm_block_sync() },
-					subgroups = @|_body| @|| {
-
-					},
-					num_subgroups = num_warps_per_block, specific = GroupType::NVVMBlock,
-					intrinsics = GroupIntrinsics {
-						//barrier_any = Op[Accessor[u8], u8]::Fn(nvvm_block_barrier_any)
-					}
-				};
-
-				(idx, block)
-			},
-
-			GroupType::NVVMBlock => {
-				let idx = nvvm_read_ptx_sreg_tid_x() / warp_size;
-				let tile_size_k = 16;
-				let warp = Group { size = warp_size,
-					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
-					barrier = @|| nvvm_warp_sync(0xFFFFFFFF),
-					subgroups = @|_body| @|| {
-
-					},
-					num_subgroups = warp_size, specific = GroupType::NVVMWarp,
-					intrinsics = GroupIntrinsics {
-						//barrier_any = Op[Accessor[u8], u8]::Fn(cuda_warp_barrier_any),
-						//shuffle_i32 = Op[   (i32,i32), i32]::Fn(cuda_warp_shuffle_i32),
-						wmma = Op[   (), WMMA]::Fn(|| nvvm_create_wmma(tile_size_k))
-					}
-				};
-
-				(idx, warp)
-			},
-
-			GroupType::NVVMWarp => {
-				let idx = nvvm_laneid() as i32;
-				let thread = Group { size = 1,
-					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
-					barrier = @|| {
-						// cuda_threadfence()
-					},
-					subgroups = @|_body| @|| {
-
-					},
-					num_subgroups = 1, specific = GroupType::NVVMThread, intrinsics = GroupIntrinsics { } };
-
-				(idx, thread)
-			},
-
-			_ => {
-				(0, Group { size = 1,
-					alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
-					barrier = @|| { },
-					subgroups = @|_body| @|| {
-
-					},
-					num_subgroups = 1, specific = GroupType::NVVMThread, intrinsics = GroupIntrinsics { } })
-			}
-		};
-
-		body(idx, subgroup)
-
-		//let subgroup_scope = group.subgroups(@|idx, subgroup| @body(idx, *subgroup));
-		//subgroup_scope()
-	}
-}
 
 fn @shared_mem[T](body: fn(Accessor[T])->()) -> fn(Group, i32)->() {
 
@@ -272,7 +168,7 @@ fn @shared_mem[T](body: fn(Accessor[T])->()) -> fn(Group, i32)->() {
 		let num_warps_per_block = 4; // (block_size + warp_size - 1) / warp_size;
 
 		let array = match (group.specific) {
-			GroupType::NVVMGrid(_block_size) => {
+			GroupType::Grid => {
 				let size_type = sizeof[T]() as i32;
 				let mem_size = size * if size_type > 1 { size_type } else { 1 };
 				pe_info("shared_mem[T]() - alloc_cuda()", mem_size);
@@ -286,7 +182,7 @@ fn @shared_mem[T](body: fn(Accessor[T])->()) -> fn(Group, i32)->() {
 				}
 			},
 
-			GroupType::NVVMBlock => {
+			GroupType::Block => {
 				let mem_size = size;
 				pe_info("shared_mem[T]() - reserve_shared[T]()", mem_size);
 				let ptr = reserve_shared[T](mem_size);
@@ -299,7 +195,7 @@ fn @shared_mem[T](body: fn(Accessor[T])->()) -> fn(Group, i32)->() {
 				}
 			},
 
-			GroupType::NVVMWarp => {
+			GroupType::Warp => {
 				let mem_size = num_warps_per_block * size;
 				pe_info("shared_mem[T]() - reserve_shared[T]()", mem_size);
 				let ptr = reserve_shared[T](mem_size);
@@ -332,10 +228,6 @@ fn @shared_mem[T](body: fn(Accessor[T])->()) -> fn(Group, i32)->() {
 	}
 }
 
-type a_element_type = f16;
-type b_element_type = f16;
-type c_element_type = f16;
-
 type f16x2 = simd[f16 * 2];
 
 type nvvm_acc_datatype = (f16x2, f16x2, f16x2, f16x2);
@@ -363,82 +255,49 @@ fn @nvvm_wmma_expand (
     }
 }
 
-fn @nvvm_wmma_load_a_expand(fragment_tensor : Tensor[a_element_type]) -> nvvm_mat_datatype {
-    let cuda_data = bitcast[&i8](fragment_tensor.data);
+fn @wmma_load_expand[T, D](
+	load_row: fn(&i8) -> D, load_row_stride: fn(&i8, i32) -> D,
+	load_col: fn(&i8) -> D, load_col_stride: fn(&i8, i32) -> D
+) = @|tensor : Tensor[T]| {
+	let data = bitcast[&i8](tensor.data);
 
-    match fragment_tensor.addr_mode {
-        AddrMode::RowMajor =>
-            if (fragment_tensor.stride > 16) {
-                nvvm_wmma_load_a_row_stride(cuda_data, fragment_tensor.stride)
-            } else {
-                nvvm_wmma_load_a_row(cuda_data)
-            },
-        AddrMode::ColMajor =>
-            if (fragment_tensor.stride > 16) {
-                nvvm_wmma_load_a_col_stride(cuda_data, fragment_tensor.stride)
-            } else {
-                nvvm_wmma_load_a_col(cuda_data)
-            }
-    }
-}
+	fn @select_load(load: fn(&i8) -> D, load_strided: fn(&i8, i32) -> D) {
+		if (tensor.stride > 16) {
+			load_strided(data, tensor.stride)
+		} else {
+			load(data)
+		}
+	}
 
-fn @nvvm_wmma_load_b_expand(fragment_tensor : Tensor[b_element_type]) -> nvvm_mat_datatype {
-    let cuda_data = bitcast[&i8](fragment_tensor.data);
+	match tensor.addr_mode {
+		AddrMode::RowMajor => select_load(load_row, load_row_stride),
+		AddrMode::ColMajor => select_load(load_col, load_col_stride)
+	}
+};
 
-    match fragment_tensor.addr_mode {
-        AddrMode::RowMajor =>
-            if (fragment_tensor.stride > 16) {
-                nvvm_wmma_load_b_row_stride(cuda_data, fragment_tensor.stride)
-            } else {
-                nvvm_wmma_load_b_row(cuda_data)
-            },
-        AddrMode::ColMajor =>
-            if (fragment_tensor.stride > 16) {
-                nvvm_wmma_load_b_col_stride(cuda_data, fragment_tensor.stride)
-            } else {
-                nvvm_wmma_load_b_col(cuda_data)
-            }
-    }
-}
+type store_fn = fn(&mut i8, f16x2, f16x2, f16x2, f16x2) -> ();
+type store_stride_fn = fn(&mut i8, f16x2, f16x2, f16x2, f16x2, i32) -> ();
 
-fn @nvvm_wmma_load_c_expand(fragment_tensor : Tensor[c_element_type]) -> nvvm_acc_datatype {
-    let cuda_data = bitcast[&i8](fragment_tensor.data);
-
-    match fragment_tensor.addr_mode {
-        AddrMode::RowMajor =>
-            if (fragment_tensor.stride > 16) {
-                nvvm_wmma_load_c_row_stride(cuda_data, fragment_tensor.stride)
-            } else {
-                nvvm_wmma_load_c_row(cuda_data)
-            },
-        AddrMode::ColMajor =>
-            if (fragment_tensor.stride > 16) {
-                nvvm_wmma_load_c_col_stride(cuda_data, fragment_tensor.stride)
-            } else {
-                nvvm_wmma_load_c_col(cuda_data)
-            }
-    }
-}
-
-fn @nvvm_wmma_store_d_expand (d_fragment_tensor : Tensor[c_element_type], acc_fragment : nvvm_acc_datatype) -> () {
-    let d_cuda = bitcast[&mut i8](d_fragment_tensor.data);
+fn @wmma_store_expand[T] (
+	store_row: store_fn, store_row_stride: store_stride_fn,
+	store_col: store_fn, store_col_stride: store_stride_fn
+) = @|tensor : Tensor[T], acc_fragment : nvvm_acc_datatype| {
+    let data = bitcast[&mut i8](tensor.data);
     let (acc1, acc2, acc3, acc4) = acc_fragment;
 
-    match d_fragment_tensor.addr_mode {
-        AddrMode::RowMajor =>
-            if (d_fragment_tensor.stride > 16) {
-                nvvm_wmma_store_d_row_stride(d_cuda, acc1, acc2, acc3, acc4, d_fragment_tensor.stride);
-            } else {
-                nvvm_wmma_store_d_row(d_cuda, acc1, acc2, acc3, acc4);
-            },
-        AddrMode::ColMajor =>
-            if (d_fragment_tensor.stride > 16) {
-                nvvm_wmma_store_d_col_stride(d_cuda, acc1, acc2, acc3, acc4, d_fragment_tensor.stride);
-            } else {
-                nvvm_wmma_store_d_col(d_cuda, acc1, acc2, acc3, acc4);
-            }
-    }
-}
+	fn @select_store(store: store_fn, store_strided: store_stride_fn) {
+		if (tensor.stride > 16) {
+			store_strided(data, acc1, acc2, acc3, acc4, tensor.stride)
+		} else {
+			store(data, acc1, acc2, acc3, acc4)
+		}
+	}
+
+	match tensor.addr_mode {
+		AddrMode::RowMajor => select_store(store_row, store_row_stride),
+		AddrMode::ColMajor => select_store(store_col, store_col_stride)
+	}
+};
 
 fn @nvvm_create_wmma(tile_size_k: i32) -> WMMA {
     let mut t_a : nvvm_mat_datatype;
@@ -448,13 +307,30 @@ fn @nvvm_create_wmma(tile_size_k: i32) -> WMMA {
     let mut m_a : AddrMode;
     let mut m_b : AddrMode;
 
+	let load_a = wmma_load_expand[a_element_type, nvvm_mat_datatype](
+		nvvm_wmma_load_a_row, nvvm_wmma_load_a_row_stride,
+		nvvm_wmma_load_a_col, nvvm_wmma_load_a_col_stride
+	);
+	let load_b = wmma_load_expand[b_element_type, nvvm_mat_datatype](
+		nvvm_wmma_load_b_row, nvvm_wmma_load_b_row_stride,
+		nvvm_wmma_load_b_col, nvvm_wmma_load_b_col_stride
+	);
+	let load_c = wmma_load_expand[c_element_type, nvvm_acc_datatype](
+		nvvm_wmma_load_c_row, nvvm_wmma_load_c_row_stride,
+		nvvm_wmma_load_c_col, nvvm_wmma_load_c_col_stride
+	);
+	let store_d = wmma_store_expand[c_element_type](
+		nvvm_wmma_store_d_row, nvvm_wmma_store_d_row_stride,
+		nvvm_wmma_store_d_col, nvvm_wmma_store_d_col_stride
+	);
+
 	// TODO: this support f16 only / need to map different load&store for f32 support
     WMMA {
         tile_size_k = tile_size_k,
-             load_a = @|a| { t_a = nvvm_wmma_load_a_expand(a); m_a = a.addr_mode; },
-             load_b = @|b| { t_b = nvvm_wmma_load_b_expand(b); m_b = b.addr_mode; },
-             load_c = @|c| { acc = nvvm_wmma_load_c_expand(c); },
+             load_a = @|a| { t_a = load_a(a); m_a = a.addr_mode; },
+             load_b = @|b| { t_b = load_b(b); m_b = b.addr_mode; },
+             load_c = @|c| { acc = load_c(c); },
                wmma = @||  { acc = nvvm_wmma_expand(t_a, t_b, acc, m_a, m_b); },
-            store_d = @|d| { nvvm_wmma_store_d_expand(d, acc); },
+            store_d = @|d| { store_d(d, acc); },
     }
 }

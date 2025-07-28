@@ -1,0 +1,72 @@
+
+static vec_width:i32 = 32;
+
+
+fn cpu_simd_intrinsics() = GroupIntrinsics {
+	//barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
+	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
+	//wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+};
+
+
+
+fn @make_cpu_thread(_idx: i32, vec_width: i32) -> Group {
+	Group {
+		size = vec_width,
+		alloc = @|size| { bitcast[&mut[u8]](0) },
+		barrier = @|| {
+			
+		},
+		subgroups = @|body| @|| {
+			let idx = 0;
+			let thread = make_cpu_thread(idx, 1);
+			@body(idx, thread)
+		},
+		num_subgroups = vec_width,
+		specific = GroupType::Thread,
+		intrinsics = cpu_simd_intrinsics()
+	}
+}
+
+
+struct CPU {
+	node_id: i32
+}
+
+fn cpu_device(idx: i32) -> Device[CPU] {
+
+	//let grid_size = 2048;
+	let num_threads = 64;
+	let block_size = 1; // vec_width
+
+	let buffer = Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 };
+	let mut buffer_offset:i32 = 0;
+
+	let cpu = CPU { node_id = idx };
+
+	Device[CPU] {
+		platform = cpu,
+		alloc = @|size| alloc_cpu(size),
+		root = @|| 	Group {
+			size = num_threads * block_size,
+			subgroups = @|body| @|| {
+				for idx in parallel(num_threads, 0, num_threads) {
+
+					let thread = make_cpu_thread(idx, block_size);
+
+					@body(idx, thread)
+				}
+			},
+			alloc = @|size| {
+				let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
+				//buffer_offset += size;
+				ptr
+			},
+			barrier = @|| {  },
+			num_subgroups = num_threads,
+			specific = GroupType::ThreadPool,
+			intrinsics = GroupIntrinsics { }
+		}
+	}
+}
+

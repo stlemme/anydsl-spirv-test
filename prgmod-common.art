@@ -1,14 +1,12 @@
 
 enum GroupType {
-	CUDAGrid(i32),
-	CUDABlock,
-	CUDAWarp,
-	CUDAThread,
+	Grid,
+	Block,
+	Warp,
+	Thread,
 
-	NVVMGrid(i32),
-	NVVMBlock,
-	NVVMWarp,
-	NVVMThread
+	ThreadPool,
+	SIMDLane
 }
 
 /*
@@ -22,6 +20,10 @@ enum Op[S, T] {
 	Fn(fn(S)->T),
 	Generic
 }
+
+type a_element_type = f16;
+type b_element_type = f16;
+type c_element_type = f16;
 
 struct WMMA {
     tile_size_k: i32,
@@ -46,6 +48,38 @@ struct Group {
 	barrier: fn() -> (),
 	specific: GroupType,
 	intrinsics: GroupIntrinsics
+}
+
+type SubGroup = Group;
+
+fn @subgroups(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
+	@|group| {
+		let subgroup_scope = group.subgroups(@|idx, subgroup| @body(idx, *subgroup));
+		subgroup_scope()
+	}
+}
+
+struct Device[P] {
+	platform: P,
+	alloc: fn(i64) -> Buffer,
+	root: fn() -> Group
+}
+
+fn @make_group[PLATFORM](device: Device[PLATFORM]) {
+
+	let accum_buffer_size = 0;
+
+	//let mut total:i32 = 0;
+
+	let buffer = if accum_buffer_size > 0 {
+		device.alloc(accum_buffer_size as i64)
+	} else {
+		Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 }
+	};
+
+	device.root()
+
+	//release(buffer);
 }
 
 
@@ -137,7 +171,7 @@ fn @pick_single_thread(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
 
 fn @each_thread(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
 
-	fn @inner_loop(offset: i32, group: Group)->() {
+	fn @(?group.size) inner_loop(offset: i32, group: Group)->() {
 		if group.size > 1 {
 			for idx, subgroup in subgroups(group) {
 				// TODO: this assumes equally sized subgroups
@@ -153,4 +187,17 @@ fn @each_thread(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
 		inner_loop(0, group)
 	}
 
+}
+
+fn @each_element_in_domain[T](body: fn(i32)->()) -> fn(Accessor[T], Group)->() {
+	@|array, group| {
+		for idx, _thread in each_thread(group) {
+			let i = idx;
+			let n = array.len();
+			// each thread may process multiple work items
+			for j in range_step(i, n, group.size) {
+				@body(j)
+			}
+		}
+	}
 }

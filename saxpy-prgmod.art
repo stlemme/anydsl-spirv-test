@@ -41,8 +41,7 @@ fn better_saxpy_element_type(
 
 }
 
-
-fn better_saxpy[T](
+fn better_saxpy_basic[T](
     group: Group,
     a: T,
     x: Accessor[T],
@@ -62,17 +61,21 @@ fn better_saxpy[T](
 
 }
 
+fn better_saxpy[T](
+    group: Group,
+    a: T,
+    x: Accessor[T],
+    y: Accessor[T],
+    implicit tt: TypeTraits[T]
+) -> () {
 
-/*
-fn better_saxpy[T](group: Group, a: T, x: Accessor[T], y: Accessor[T]) -> () {
-
-	for idx in each_element_in_domain(y, group) {
-		let i = idx;
-		y.set(i, a * x.get(i) + y.get(i));
+	for i in each_element_in_domain[T](y, group) {
+        let ax = tt.mul(a, x.get(i));
+		y.set(i, tt.add(ax, y.get(i)));
 	}
 
 }
-*/
+
 
 fn saxpy_naive (
     a : element_type,
@@ -90,20 +93,15 @@ fn saxpy_naive (
 
 #[export]
 fn entry_fn() -> i32 {
-    //let acc = cuda_accelerator(0);
-    let acc = nvvm_accelerator(0);
+
+    let dev = nvvm_device(0);
+    //let dev = cpu_device(0);
+
+    let group = make_group(dev);
 
     let acc_saxpy = @|a : element_type, x : Accessor[element_type], y : Accessor[element_type]| {
-        let bs = 128;
-        let num = 8 * bs;
-        let scratchpad_size = 0;
 
-	    for grid in make_nvvm_group(acc, num, bs, scratchpad_size) {
-            better_saxpy_element_type(grid, a, x, y);
-        }
-
-        //let group = make_group(acc);
-        //better_saxpy_element_type(group, a, x, y);
+        better_saxpy[element_type](group, a, x, y);
     };
 	let ref_saxpy = saxpy_naive;
 
@@ -122,8 +120,9 @@ fn entry_fn() -> i32 {
     let a_value = random_float[element_type]();
 
     // Copy data to device
-    let x_dev_buffer = acc.alloc(sizeof[element_type]() * N as i64);
-    let y_dev_buffer = acc.alloc(sizeof[element_type]() * N as i64);
+    // TODO: this shall actually depend on group
+    let x_dev_buffer = dev.alloc(sizeof[element_type]() * N as i64);
+    let y_dev_buffer = dev.alloc(sizeof[element_type]() * N as i64);
 
     copy(x_cpu_buffer, x_dev_buffer);
     copy(y_cpu_buffer, y_dev_buffer);
@@ -133,12 +132,12 @@ fn entry_fn() -> i32 {
     let y_dev_array = make_array_from_buffer[element_type](y_dev_buffer);
 
     print_string("prgmod saxpy:\n");
-    acc.sync();
+    group.barrier();
     let acc_start = get_kernel_time();
 
     acc_saxpy(a_value, x_dev_array, y_dev_array);
 
-    acc.sync();
+    group.barrier();
     let acc_end = get_kernel_time();
     print_string("Done!\n");
     if (acc_end - acc_start > 0) {

@@ -117,19 +117,21 @@ endforeach()
 # add_executable(reduction-sum ${_program_reduction_sum})
 # target_link_libraries(reduction-sum PRIVATE runtime)
 
+set(_src_prgmod prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art prgmod-mapping-cpu.art)
 
+set(_src_matmul matmul-prgmod.art ${_src_prgmod})
 anydsl_runtime_wrap(_program_matmul
 	FRONTEND artic
 	NAME matmul-prgmod
-	FILES matmul-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art)
-add_executable(matmul-prgmod ${_program_matmul} main.cpp)
+	FILES ${_src_matmul})
+add_executable(matmul-prgmod ${_program_matmul} ${_src_matmul} main.cpp)
 target_link_libraries(matmul-prgmod PRIVATE runtime)
 
 
+set(_src_saxpy saxpy-prgmod.art ${_src_prgmod})
 anydsl_runtime_wrap(_program_saxpy
 	FRONTEND artic
 	NAME saxpy-prgmod
-	FILES saxpy-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art)
-add_executable(saxpy-prgmod ${_program_saxpy}  saxpy-prgmod.art prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art main.cpp)
+	FILES ${_src_saxpy})
+add_executable(saxpy-prgmod ${_program_saxpy} ${_src_saxpy} main.cpp)
 target_link_libraries(saxpy-prgmod PRIVATE runtime)
-
