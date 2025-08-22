@@ -3,7 +3,9 @@
 type element_type = f32;
 
 static N = 4096;
-
+// increase for reliable measurements,
+// but may break results when using read-write-buffers
+static num_bench_iter = 1;
 
 fn saxpy(
     group: Group,
@@ -100,7 +102,6 @@ fn entry_fn() -> i32 {
     let group = make_group(dev);
 
     let acc_saxpy = @|a : element_type, x : Accessor[element_type], y : Accessor[element_type]| {
-
         better_saxpy[element_type](group, a, x, y);
     };
 	let ref_saxpy = saxpy_naive;
@@ -132,34 +133,36 @@ fn entry_fn() -> i32 {
     let y_dev_array = make_array_from_buffer[element_type](y_dev_buffer);
 
     print_string("prgmod saxpy:\n");
-    group.barrier();
-    let acc_start = get_kernel_time();
+    //group.barrier();
+    //let acc_start = get_kernel_time();
 
-    acc_saxpy(a_value, x_dev_array, y_dev_array);
-
-    group.barrier();
-    let acc_end = get_kernel_time();
-    print_string("Done!\n");
-    if (acc_end - acc_start > 0) {
-        print_string("Took ");
-        print_i64(acc_end - acc_start);
-        print_string("us\n");
+    for benchmark(group, num_bench_iter) {
+        acc_saxpy(a_value, x_dev_array, y_dev_array);
     }
+
+    //group.barrier();
+    //let acc_end = get_kernel_time();
+    //print_string("Done!\n");
+    //if (acc_end - acc_start > 0) {
+    //    print_string("Took ");
+    //    print_i64(acc_end - acc_start);
+    //    print_string("us\n");
+    //}
 
     // Fetch result
     copy(y_dev_buffer, y_cpu_buffer);
 
     // Ref implementation
-    print_string("CPU variant:\n");
+    //print_string("CPU variant:\n");
     let cpu_start = get_micro_time();
     ref_saxpy(a_value, x_cpu_array, r_cpu_array);
     let cpu_end = get_micro_time();
-    print_string("Done!\n");
-    if (cpu_end - cpu_start > 0) {
-        print_string("Took ");
-        print_i64(cpu_end - cpu_start);
-        print_string("us\n");
-    }
+    //print_string("Done!\n");
+    //if (cpu_end - cpu_start > 0) {
+    //    print_string("Took ");
+    //    print_i64(cpu_end - cpu_start);
+    //    print_string("us\n");
+    //}
 
     for i in range(0, r_cpu_array.len()) {
         r_cpu_array.set(i, r_cpu_array.get(i) - y_cpu_array.get(i));

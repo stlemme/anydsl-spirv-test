@@ -38,6 +38,7 @@ struct GroupIntrinsics {
 	barrier_any: Op[Accessor[u8],   u8] = Op[Accessor[u8],   u8]::Generic,
 	shuffle_i32: Op[   (i32,i32),  i32] = Op[   (i32,i32),  i32]::Generic,
 	wmma:        Op[          (), WMMA] = Op[          (), WMMA]::Generic,
+	get_clock:   Op[          (),  i64] = Op[          (),  i64]::Generic,
 }
 
 struct Group {
@@ -61,6 +62,7 @@ fn @subgroups(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
 
 struct Device[P] {
 	platform: P,
+	device_id: i32,
 	alloc: fn(i64) -> Buffer,
 	root: fn() -> Group
 }
@@ -76,6 +78,10 @@ fn @make_group[PLATFORM](device: Device[PLATFORM]) {
 	} else {
 		Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 }
 	};
+
+	//let device_name = runtime_device_name(device.device_id);
+	//print_string(device_name);
+	//print_char('\n');
 
 	device.root()
 
@@ -189,6 +195,53 @@ fn @each_thread(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
 
 }
 
+
+#[import(cc = "builtin", name = "compare")]
+fn intrinsic_compare[A](&A, &A) -> bool;
+
+/*
+enum  MyEnum { A, B, C }
+struct MyType { x: MyEnum }
+
+fn @test_match(value: MyType, specific: MyEnum) -> i32 {
+
+	//match value.x {
+	//	specific => 42,
+		//_ => 23
+	//}
+
+	if intrinsic_compare[MyEnum](value.x, specific) {
+		42
+	} else {
+		23
+	}
+}
+*/
+
+fn @specific_subgroups(body: fn(i32, SubGroup)->()) -> fn(Group, GroupType)->() {
+
+	fn @(?group.specific & ?group.size) inner_loop(offset: i32, group: Group, groupType: GroupType)->() {
+
+		if intrinsic_compare[GroupType](group.specific, groupType) {
+
+			@body(offset, group)
+
+		} else if group.size > 1 {
+			for idx, subgroup in subgroups(group) {
+				inner_loop(offset + idx, subgroup, groupType)
+			}
+		} else {
+			// raise compiler error
+		}
+	}
+
+	@|group, groupType| {
+		inner_loop(0, group, groupType)
+	}
+
+}
+
+
 fn @each_element_in_domain[T](body: fn(i32)->()) -> fn(Accessor[T], Group)->() {
 	@|array, group| {
 		for idx, _thread in each_thread(group) {
@@ -200,4 +253,66 @@ fn @each_element_in_domain[T](body: fn(i32)->()) -> fn(Accessor[T], Group)->() {
 			}
 		}
 	}
+}
+
+
+static mut total_kernel_timing = 0:i64;
+static mut total_cpu_timing = 0:i64;
+
+fn @benchmark_wrapper(get_time: fn() -> i64, num_iter: i32, body: fn() -> (), sync: fn() -> ()) -> i64 {
+    let times_buf = alloc_cpu(num_iter as i64 * sizeof[i64]());
+    let times = bitcast[&mut[i64]](times_buf.data);
+    sync();
+    for i in range(0, num_iter) {
+        let start = get_time();
+        body();
+        sync();
+        times(i) = get_time() - start;
+    }
+    sort(num_iter, times, |a: i64, b: i64| a > b);
+    let median = times(num_iter/2);
+    print_string("Timing: ");
+    print_f64(times(0) as f64 / 1000.0);
+    print_string(" | ");
+    print_f64(median as f64 / 1000.0);
+    print_string(" | ");
+    print_f64(times(num_iter-1) as f64 / 1000.0);
+    print_string(" (minimum | median(");
+    print_i32(num_iter);
+    print_string(") | maximum) ms\n");
+    release(times_buf);
+    median
+}
+
+//static iter_acc =  7;
+//static iter_cpu = 27;
+fn @benchmark(body: fn() -> ()) = @|group: Group, num_iter: i32| total_kernel_timing += benchmark_wrapper(
+	match group.intrinsics.get_clock {
+		Op[(), i64]::Fn(func) => @|| func(),
+		_ => { @|| { 0 } }
+	},
+	num_iter,
+	body,
+	group.barrier);
+//fn @benchmark_cpu(body: fn() -> ()) = @||                 total_cpu_timing    += benchmark(get_micro_time,  iter_cpu, body, @|| {});
+
+fn print_total_timing() -> () {
+    print_string("Total timing for cpu / kernel: ");
+    print_f64(total_cpu_timing as f64 / 1000.0);
+    print_string(" / ");
+    print_f64(total_kernel_timing as f64 / 1000.0);
+    print_string(" ms\n")
+}
+
+fn @(?num) sort[T](num: i32, arr: &mut[T], cmp: fn(T, T)->bool) -> () {
+    // insertion sort
+    for i in range(1, num) {
+        let x = arr(i);
+        let mut j = i;
+        while j >  0 && cmp(arr(j-1), x) {
+            arr(j) = arr(j-1);
+            j = j - 1;
+        }
+        arr(j) = x;
+    }
 }

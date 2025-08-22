@@ -4,7 +4,8 @@ static warp_size:i32 = 32;
 fn nvvm_thread_intrinsics() = GroupIntrinsics {
 };
 
-fn nvvm_warp_intrinsics() = GroupIntrinsics {
+
+fn nvvm_warp_intrinsics(tile_size_k: i32) = GroupIntrinsics {
 	barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
 	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
 	wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
@@ -69,7 +70,7 @@ fn @make_nvvm_warp(_idx: i32, _num_warps_per_block: i32) -> Group {
 		},
 		num_subgroups = warp_size,
 		specific = GroupType::Warp,
-		intrinsics = nvvm_warp_intrinsics()
+		intrinsics = nvvm_warp_intrinsics(tile_size_k)
 	}
 }
 
@@ -112,7 +113,7 @@ fn nvvm_device(idx: i32) -> Device[NVVM] {
 	let acc = nvvm_accelerator(idx);
 
 	let mut grid_size = 2048;
-	let block_size = 256; // changing this to a mutable variable breaks compile
+	let mut block_size = 128;
 
 	let buffer = Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 };
 	let mut buffer_offset:i32 = 0;
@@ -120,34 +121,45 @@ fn nvvm_device(idx: i32) -> Device[NVVM] {
 	let nvvm = NVVM {
 		device_id = idx,
 		grid_size = @|num| { grid_size = num; },
-		block_size = @|bs| { /* block_size = bs; */ },
-		warps_per_block = @|num| { /* block_size = num * warp_size; */ }
+		block_size = @|bs| { block_size = bs; },
+		warps_per_block = @|num| { block_size = num * warp_size; }
 	};
+
+	//let device_name = runtime_device_name(runtime_device(1, nvvm.device_id));
+	//print_string(device_name); print_string("\n");
 
 	Device[NVVM] {
 		platform = nvvm,
+		device_id = runtime_device(1, nvvm.device_id),
 		alloc = @|size| acc.alloc(size),
-		root = @|| 	Group {
-			size = grid_size,
-			subgroups = @|body| @|| {
-				print_string("grid_size: "); print_i32(grid_size);
-				for _ in acc.exec(( grid_size, 1, 1), (block_size, 1, 1)) {
+		root = @|| {
+			let fixed_grid_size = grid_size;
+			let fixed_block_size = block_size;
 
-					let idx = nvvm_read_ptx_sreg_ctaid_x();
-					let block = make_nvvm_block(idx, block_size);
+			Group {
+				size = fixed_grid_size,
+				subgroups = @|body| @|| {
+					print_string("grid_size: "); print_i32(fixed_grid_size); print_string(" | block_size: "); print_i32(fixed_block_size); print_string("\n");
+					for _ in acc.exec(( fixed_grid_size, 1, 1), (fixed_block_size, 1, 1)) {
 
-					@body(idx, block)
+						let idx = nvvm_read_ptx_sreg_ctaid_x();
+						let block = make_nvvm_block(idx, fixed_block_size);
+
+						@body(idx, block)
+					}
+				},
+				alloc = @|size| {
+					let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
+					//buffer_offset += size;
+					ptr
+				},
+				barrier = @|| { acc.sync(); },
+				num_subgroups = (fixed_grid_size + fixed_block_size - 1) / fixed_block_size,
+				specific = GroupType::Grid,
+				intrinsics = GroupIntrinsics {
+					get_clock = Op[ (), i64]::Fn(get_kernel_time)
 				}
-			},
-			alloc = @|size| {
-				let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
-				//buffer_offset += size;
-				ptr
-			},
-			barrier = @|| { acc.sync(); },
-			num_subgroups = (grid_size + block_size - 1) / block_size,
-			specific = GroupType::Grid,
-			intrinsics = GroupIntrinsics { }
+			}
 		}
 	}
 }

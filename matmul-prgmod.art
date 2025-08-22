@@ -14,6 +14,10 @@ static N = 512;
 static M = 1024;
 static K = 256;
 
+// increase for reliable measurements,
+// but may break results when using read-write-buffers
+static num_bench_iter = 7;
+
 
 static alayout = AddrMode::RowMajor;
 static blayout = AddrMode::ColMajor;
@@ -212,11 +216,13 @@ fn @matrix_multiplyB(
     pe_info("bs:", bs);
 
     // blocks
-	for pbidx, block in subgroups(group) {
+	for pbidx, block in specific_subgroups(group, GroupType::Block) {
+	//for pbidx, block in subgroups(group) {
 
         for bidx in range_step(pbidx, num/bs, group.num_subgroups) {
 		    // warps
-		    for widx, warp in subgroups(block) {
+            for widx, warp in specific_subgroups(block, GroupType::Warp) {
+		    //for widx, warp in subgroups(block) {
 
                 let linear_widx = bidx * block.num_subgroups + widx;
                 let warp_stride = matrix_x_blocks * block_x_warps;
@@ -444,7 +450,8 @@ fn @matrix_multiplyD(
         d_block_tensor : Tensor[c_element_type]
     ) -> () {
 
-        for widx, warp in subgroups(block) {
+        for widx, warp in specific_subgroups(group, GroupType::Warp) {
+        //for widx, warp in subgroups(block) {
 
             let warp_tensors = @create_warp_tensors(widx, warp);
 
@@ -562,10 +569,12 @@ fn @matrix_multiplyD(
     let scratchpad_size = 0;
 
     // blocks
-	for bidx, block in subgroups(group) {
+	for bidx, block in specific_subgroups(group, GroupType::Block) {
+	//for bidx, block in subgroups(group) {
 
         //for block_index in range_step(bidx, matrix_total_blocks, parallel_blocks) {
-        for block_index in range_step(bidx, num/block.size, group.num_subgroups) {
+        //for block_index in range_step(bidx, num/block.size, group.num_subgroups) {
+        for block_index in range_step(bidx, matrix_total_blocks, group.num_subgroups) {
             let block_offset_x = (block_index % matrix_x_blocks) * block_size_x;
             let block_offset_y = (block_index / matrix_x_blocks) * block_size_y;
 
@@ -662,19 +671,33 @@ static debug_prints = false;
 
 #[export]
 fn entry_fn() -> i32 {
-    //let acc = cuda_accelerator(0);
-    //let acc = nvvm_accelerator(0);
-    let dev = nvvm_device(0);
 
-    dev.platform.grid_size(4096);
+    let dev = nvvm_device(0);
+    //dev.platform.grid_size(M*N);
     //dev.platform.warps_per_block(8);
 
     //let dev = cpu_device(0);
 
+    // dev : Device
+    // platform : generic NVVM
+    // opt : generic NVVMOptions
+
+    //let sched = dev.options(); // NVVM
+    //opt.grid_size(4096);
+    //opt(Options::GridSize, 4096);
+
 	let group = make_group(dev);
 
     let acc_matmul = @|a : Tensor[a_element_type], b : Tensor[b_element_type], c : Tensor[c_element_type], d : Tensor[c_element_type]| {
+        // nvvm and cpu support
         matrix_multiplyAv2(group, a, b, c, d);
+
+        // nvvm support only yet; requires warps_per_block(8) for correct results
+        //matrix_multiplyB(group, a, b, c, d);
+
+        // nvvm support only yet; requires warps_per_block(8)
+        // using WMMA if enabled in intrinsics; broken iteration, incorrect results, or compiler crashes
+        //matrix_multiplyD(group, a, b, c, d);
     };
 	let ref_matmul = matrix_multiply_naive;
 
@@ -716,18 +739,9 @@ fn entry_fn() -> i32 {
 
     // prgmod multiply tensors
     print_string("prgmod multiplication:\n");
-    group.barrier();
-    let acc_start = get_kernel_time();
 
-    acc_matmul(a_global_tensor, b_global_tensor, c_global_tensor, d_global_tensor);
-
-    group.barrier();
-    let acc_end = get_kernel_time();
-    print_string("Done!\n");
-    if (acc_end - acc_start > 0) {
-        print_string("Took ");
-        print_i64(acc_end - acc_start);
-        print_string("us\n");
+    for benchmark(group, num_bench_iter) {
+        acc_matmul(a_global_tensor, b_global_tensor, c_global_tensor, d_global_tensor);
     }
 
     // Fetch result
@@ -739,16 +753,16 @@ fn entry_fn() -> i32 {
     let r_tensor = Tensor[c_element_type] { data = r_cpu, x_dim = N, y_dim = M, addr_mode = clayout, stride = cstride };
 
     // Ref implementation
-    print_string("CPU multiplication:\n");
+    //print_string("CPU multiplication:\n");
     let cpu_start = get_micro_time();
     ref_matmul(a_tensor, b_tensor, c_tensor, r_tensor);
     let cpu_end = get_micro_time();
-    print_string("Done!\n");
-    if (cpu_end - cpu_start > 0) {
-        print_string("Took ");
-        print_i64(cpu_end - cpu_start);
-        print_string("us\n");
-    }
+    //print_string("Done!\n");
+    //if (cpu_end - cpu_start > 0) {
+    //    print_string("Took ");
+    //    print_i64(cpu_end - cpu_start);
+    //    print_string("us\n");
+    //}
 
     // Compare results
     let d_tensor = Tensor[c_element_type] { data = d_cpu, x_dim = N, y_dim = M, addr_mode = clayout, stride = cstride };

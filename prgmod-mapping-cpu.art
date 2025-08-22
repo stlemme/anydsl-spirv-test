@@ -30,42 +30,55 @@ fn @make_cpu_thread(_idx: i32, vec_width: i32) -> Group {
 
 
 struct CPU {
-	node_id: i32
+	node_id: i32,
+	parallelize: fn(i32) -> (),
+	vectorize: fn(i32) -> ()
 }
 
 fn cpu_device(idx: i32) -> Device[CPU] {
 
 	//let grid_size = 2048;
-	let num_threads = 64;
+	let mut num_threads = 64;
 	let block_size = 1; // vec_width
 
 	let buffer = Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 };
 	let mut buffer_offset:i32 = 0;
 
-	let cpu = CPU { node_id = idx };
+	let cpu = CPU {
+		node_id = idx,
+		parallelize = @|num| { num_threads = num; },
+		vectorize = @|width| { /* block_size = width; */ }
+	};
 
 	Device[CPU] {
 		platform = cpu,
+		device_id = runtime_device(0, cpu.node_id),
 		alloc = @|size| alloc_cpu(size),
-		root = @|| 	Group {
-			size = num_threads * block_size,
-			subgroups = @|body| @|| {
-				for idx in parallel(num_threads, 0, num_threads) {
+		root = @|| {
+			let fixed_num_threads = num_threads;
 
-					let thread = make_cpu_thread(idx, block_size);
+			Group {
+				size = fixed_num_threads * block_size,
+				subgroups = @|body| @|| {
+					for idx in parallel(fixed_num_threads, 0, fixed_num_threads) {
 
-					@body(idx, thread)
+						let thread = make_cpu_thread(idx, block_size);
+
+						@body(idx, thread)
+					}
+				},
+				alloc = @|size| {
+					let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
+					//buffer_offset += size;
+					ptr
+				},
+				barrier = @|| {  },
+				num_subgroups = fixed_num_threads,
+				specific = GroupType::ThreadPool,
+				intrinsics = GroupIntrinsics {
+					get_clock = Op[ (), i64]::Fn(get_micro_time)
 				}
-			},
-			alloc = @|size| {
-				let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
-				//buffer_offset += size;
-				ptr
-			},
-			barrier = @|| {  },
-			num_subgroups = num_threads,
-			specific = GroupType::ThreadPool,
-			intrinsics = GroupIntrinsics { }
+			}
 		}
 	}
 }
