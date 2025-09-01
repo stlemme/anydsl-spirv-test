@@ -121,7 +121,50 @@ fn @matrix_multiplyAv2(
             tensor_write[f32, c_element_type](x, y, d, (cv + rv));
         }
     }
+}
 
+fn @matrix_multiplyAv3(
+        group: Group,
+        a : Tensor[a_element_type],
+        b : Tensor[b_element_type],
+        c : Tensor[c_element_type],
+        d : Tensor[c_element_type]
+        ) -> () {
+    let m = a.y_dim;
+    let n = b.x_dim;
+    //assert(a.x_dim == b.y_dim);
+    let k = a.x_dim;
+
+    let num = m*n;
+
+    for tidx, _thread in each_thread(group) {
+        for yl in range_step(0, m, group.size) {
+
+    //for t in parallel(4, 0, 4) {
+        //vectorize(4, @|v| {
+            //let tidx = t * 4 + v;
+            //for yl in range_step(0, m, 16) {
+
+                let y = yl + tidx;
+
+                for x in range(0, n) {
+                    let mut rv = 0 : f64;
+
+                    for i in range(0, k) {
+                        let av = tensor_read[f64, a_element_type](i, y, a);
+                        let bv = tensor_read[f64, b_element_type](x, i, b);
+
+                        rv += av * bv;
+                    }
+
+                    let cv = tensor_read[f64, c_element_type](x, y, c);
+
+                    tensor_write[f64, c_element_type](x, y, d, (cv + rv));
+                }
+            //}
+        //});
+        }
+    }
 }
 
 
@@ -672,7 +715,11 @@ static debug_prints = false;
 #[export]
 fn entry_fn() -> i32 {
 
-    let dev = nvvm_device(0);
+    //let dev = nvvm_device(0);
+    let dev = cpu_device(0);
+    dev.platform.parallelize(4);
+    dev.platform.vectorize(4);
+    dev.platform.unroll(4);
     //dev.platform.grid_size(M*N);
     //dev.platform.warps_per_block(8);
 
@@ -690,7 +737,7 @@ fn entry_fn() -> i32 {
 
     let acc_matmul = @|a : Tensor[a_element_type], b : Tensor[b_element_type], c : Tensor[c_element_type], d : Tensor[c_element_type]| {
         // nvvm and cpu support
-        matrix_multiplyAv2(group, a, b, c, d);
+        matrix_multiplyAv3(group, a, b, c, d);
 
         // nvvm support only yet; requires warps_per_block(8) for correct results
         //matrix_multiplyB(group, a, b, c, d);

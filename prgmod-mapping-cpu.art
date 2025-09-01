@@ -1,85 +1,123 @@
 
-static vec_width:i32 = 32;
+//static vec_width:i32 = 32;
 
 
 fn cpu_simd_intrinsics() = GroupIntrinsics {
-	//barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
-	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
-	//wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+    //barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
+    //shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
+    //wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
 };
 
 
+fn @make_cpu_simd (idx : i32, vec_width : i32) -> Group {
+    Group {
+        size = vec_width,
+        alloc = @|size| { bitcast[&mut[u8]](0) },
+        barrier = @|| {
 
-fn @make_cpu_thread(_idx: i32, vec_width: i32) -> Group {
-	Group {
-		size = vec_width,
-		alloc = @|size| { bitcast[&mut[u8]](0) },
-		barrier = @|| {
-			
-		},
-		subgroups = @|body| @|| {
-			let idx = 0;
-			let thread = make_cpu_thread(idx, 1);
-			@body(idx, thread)
-		},
-		num_subgroups = vec_width,
-		specific = GroupType::Thread,
-		intrinsics = cpu_simd_intrinsics()
-	}
+        },
+        subgroups = @|body| @|| {
+            pe_info("vectorize vec_width", vec_width);
+            if vec_width > 1 {
+                vectorize(vec_width, @|v| {
+                    let lane = make_cpu_simd(v, 1);
+                    @body(v, lane)
+                });
+            } else {
+                let lane = make_cpu_simd(0, 1);
+                @body(0, lane)
+            }
+        },
+        num_subgroups = vec_width,
+        specific = GroupType::SIMDLane,
+        intrinsics = cpu_simd_intrinsics()
+    }
+}
+
+
+fn @make_cpu_thread(idx: i32, vec_width: i32, unroll_width: i32) -> Group {
+    Group {
+        size = vec_width * unroll_width,
+        alloc = @|size| { bitcast[&mut[u8]](0) },
+        barrier = @|| {
+
+        },
+        subgroups = @|body| @|| {
+            pe_info("unroll unroll_width", unroll_width);
+            pe_info("unroll vec_width", vec_width);
+            if unroll_width > 1 {
+                for v in unroll(0, unroll_width) {
+                    let vector = make_cpu_simd(v, vec_width);
+                    @body(v, vector)
+                }
+            } else {
+                let vector = make_cpu_simd(idx, vec_width);
+                @body(idx, vector)
+            }
+        },
+        num_subgroups = vec_width,
+        specific = GroupType::Thread,
+        intrinsics = cpu_simd_intrinsics()
+    }
 }
 
 
 struct CPU {
-	node_id: i32,
-	parallelize: fn(i32) -> (),
-	vectorize: fn(i32) -> ()
+    node_id: i32,
+    parallelize: fn(i32) -> (),
+    vectorize: fn(i32) -> (),
+    unroll: fn(i32) -> (),
 }
 
 fn cpu_device(idx: i32) -> Device[CPU] {
 
-	//let grid_size = 2048;
-	let mut num_threads = 64;
-	let block_size = 1; // vec_width
+    //let grid_size = 2048;
+    let mut num_threads = 1;
+    let mut block_size = 1; // vec_width
+    let mut unroll_width = 1;
 
-	let buffer = Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 };
-	let mut buffer_offset:i32 = 0;
+    let buffer = Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 };
+    let mut buffer_offset:i32 = 0;
 
-	let cpu = CPU {
-		node_id = idx,
-		parallelize = @|num| { num_threads = num; },
-		vectorize = @|width| { /* block_size = width; */ }
-	};
+    let cpu = CPU {
+        node_id = idx,
+        parallelize = @|num| { num_threads = num; },
+        vectorize = @|width| { block_size = width; },
+        unroll = @|width| { unroll_width = width; },
+    };
 
-	Device[CPU] {
-		platform = cpu,
-		device_id = runtime_device(0, cpu.node_id),
-		alloc = @|size| alloc_cpu(size),
-		root = @|| {
-			let fixed_num_threads = num_threads;
+    Device[CPU] {
+        platform = cpu,
+        device_id = runtime_device(0, cpu.node_id),
+        alloc = @|size| alloc_cpu(size),
+        root = @|| {
+            let fixed_num_threads = num_threads;
+            let fixed_block_size = block_size;
+            let fixed_unroll_width = unroll_width;
 
-			Group {
-				size = fixed_num_threads * block_size,
-				subgroups = @|body| @|| {
-					for idx in parallel(fixed_num_threads, 0, fixed_num_threads) {
+            Group {
+                size = fixed_num_threads * fixed_block_size * fixed_unroll_width,
+                subgroups = @|body| @|| {
+                    for idx in parallel(fixed_num_threads, 0, fixed_num_threads) {
 
-						let thread = make_cpu_thread(idx, block_size);
+                        let thread = make_cpu_thread(idx, fixed_block_size, fixed_block_size);
 
-						@body(idx, thread)
-					}
-				},
-				alloc = @|size| {
-					let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
-					//buffer_offset += size;
-					ptr
-				},
-				barrier = @|| {  },
-				num_subgroups = fixed_num_threads,
-				specific = GroupType::ThreadPool,
-				intrinsics = GroupIntrinsics {
-					get_clock = Op[ (), i64]::Fn(get_micro_time)
-				}
-			}
-		}
-	}
+                        @body(idx, thread)
+                    }
+                },
+                alloc = @|size| {
+                    let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
+                    //buffer_offset += size;
+                    ptr
+                },
+                barrier = @|| {  },
+                num_subgroups = fixed_num_threads,
+                specific = GroupType::ThreadPool,
+                intrinsics = GroupIntrinsics {
+                    get_clock = Op[ (), i64]::Fn(get_micro_time)
+                }
+            }
+        }
+    }
 }
 

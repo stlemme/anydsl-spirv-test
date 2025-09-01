@@ -21,9 +21,19 @@ implicit = TypeTraits[f32] {
 };
 
 struct Convert[T, V] { apply: fn(T)->V }
+
+implicit = Convert[f16, f16] { apply = @|x| x };
 implicit = Convert[f32, f32] { apply = @|x| x };
-implicit = Convert[f16, f32] { apply = @|x| x as f32 };
+implicit = Convert[f64, f64] { apply = @|x| x };
+
 implicit = Convert[f32, f16] { apply = @|x| x as f16 };
+implicit = Convert[f64, f16] { apply = @|x| x as f16 };
+
+implicit = Convert[f16, f32] { apply = @|x| x as f32 };
+implicit = Convert[f64, f32] { apply = @|x| x as f32 };
+
+implicit = Convert[f16, f64] { apply = @|x| x as f64 };
+implicit = Convert[f32, f64] { apply = @|x| x as f64 };
 
 struct print_function[T] { print : fn (T) -> () }
 implicit = print_function[f16] { print = @| a | { print_f32(a as f32); } };
