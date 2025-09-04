@@ -4,11 +4,22 @@ static warp_size:i32 = 32;
 fn nvvm_thread_intrinsics() = GroupIntrinsics {
 };
 
+struct WMMA_OP[T] {
+	wmma: Op[(), WMMA],
+}
 
-fn nvvm_warp_intrinsics(tile_size_k: i32) = GroupIntrinsics {
+implicit = WMMA_OP[f64] { wmma = Op[(), WMMA]::Generic };
+implicit = WMMA_OP[f32] { wmma = Op[(), WMMA]::Generic };
+
+implicit = WMMA_OP[f16] {
+	wmma = Op[(), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+};
+
+fn nvvm_warp_intrinsics(tile_size_k: i32, implicit wmma_op : WMMA_OP[c_element_type]) = GroupIntrinsics {
 	barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
 	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
-	wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+	//wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+        wmma = wmma_op.wmma
 };
 
 fn nvvm_block_intrinsics() = GroupIntrinsics {

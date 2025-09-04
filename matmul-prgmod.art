@@ -469,7 +469,7 @@ fn @matrix_multiplyD(
         for _tile in unroll(0, warp_x_tiles * warp_y_tiles) {
             //let mut acc_fragment : [c_element_type * 256];
             //let buffer = bitcast[&mut addrspace(3) [c_element_type]](&acc_fragment(0));
-            let new_wmma = create_wmma(warp);
+            let new_wmma = @create_wmma(warp);
 
             let inner_warp_tensors_nomut = inner_warp_tensors;
             inner_warp_tensors = @|tile : i32| -> WMMA {
