@@ -634,6 +634,317 @@ fn @matrix_multiplyD(
 }
 
 
+fn @matrix_multiplyD_shared(
+    group: Group,
+    a : Tensor[a_element_type],
+    b : Tensor[b_element_type],
+    c : Tensor[c_element_type],
+    d : Tensor[c_element_type]
+) -> () {
+    let m = a.y_dim;
+    let n = b.x_dim;
+    //assert(a.x_dim == b.y_dim);
+    let k = a.x_dim;
+
+    let wave_size = warp_size;
+
+    //Each block will calculate x * y many tiles.
+    let block_x_tiles = 8;
+    let block_y_tiles = 8;
+
+    //Each warp will be used to calculate this geometry of tiles.
+    let warp_x_tiles = 2;
+    let warp_y_tiles = 4;
+
+    let k_shared_tiles = 4;
+    let skew_half = 16;
+
+    //Calculate the rest of the grid geometry
+    let block_x_warps = block_x_tiles / warp_x_tiles;
+    let block_y_warps = block_y_tiles / warp_y_tiles;
+
+    let block_size_x = block_x_tiles * tile_size_x;
+    let block_size_y = block_y_tiles * tile_size_y;
+
+    let warp_size_x = warp_x_tiles * tile_size_x;
+    let warp_size_y = warp_y_tiles * tile_size_y;
+
+    let matrix_x_tiles = n / tile_size_x;
+    let matrix_y_tiles = m / tile_size_y;
+
+    let matrix_x_warps = matrix_x_tiles / warp_x_tiles;
+    let matrix_y_warps = matrix_y_tiles / warp_y_tiles;
+
+    let matrix_x_blocks = matrix_x_warps / block_x_warps;
+    let matrix_y_blocks = matrix_y_warps / block_y_warps;
+
+
+    fn @copy_single_tile(
+        warp: Group,
+        src: Tensor[c_element_type],
+        dst: Tensor[c_element_type]
+    ) -> () {
+        let m = src.x_dim;
+        let n = src.y_dim;
+
+        //assert(src.x_dim == dst.x_dim);
+        //assert(src.x_dim == dst.x_dim);
+        //assert(warp.size == 32);
+
+        for tidx, _thread in subgroups(warp) {
+            let x = tidx % m;
+
+            for y_step in range_step(0, n, warp.size / m) {
+                let y = y_step + tidx / m;
+
+                let value = tensor_read[f32, c_element_type](x, y, src);
+
+                tensor_write[f32, c_element_type](x, y, dst, value);
+            }
+        }
+    }
+
+
+    fn @wmma_single_tile(
+        warp: Group,
+        a: Tensor[a_element_type],
+        b: Tensor[b_element_type],
+        acc: Tensor[c_element_type]
+    ) -> () {
+        //let m = a.y_dim;
+        //let n = b.x_dim;
+        let k = a.x_dim;
+
+        //assert(a.x_dim == b.y_dim);
+        //assert(warp.size == 32);
+        //assert(k == 16);
+
+        for tidx, _thread in subgroups(warp) {
+            let x = tidx % k;
+
+            for y_step in range_step(0, tile_size_y, warp.size / k) {
+                let y = y_step + tidx / k;
+
+                let mut rv = tensor_read[f32, c_element_type](x, y, acc);
+
+                for global_k in range(0, k) {
+                    let av = tensor_read[f32, a_element_type](global_k, y, a);
+                    let bv = tensor_read[f32, b_element_type](x, global_k, b);
+
+                    rv += av * bv;
+                }
+
+                tensor_write[f32, c_element_type](x, y, acc, rv);
+            }
+        }
+    }
+
+
+    let create_wmma = |warp: Group| match warp.intrinsics.wmma {
+        // utilize hardware intrinsic if available
+        Op[(), WMMA]::Fn(func) => func(),
+
+        // tensor core in software
+        _ => {
+            let mut t_a : Tensor[a_element_type];
+            let mut t_b : Tensor[b_element_type];
+
+            let mut acc_fragment : [c_element_type * 256];
+            let buffer = bitcast[&mut [c_element_type]](&acc_fragment(0));
+
+            let acc = Tensor[c_element_type] {
+                data = buffer, // bitcast[&mut [c_element_type]](buffer),
+                x_dim = tile_size_x,
+                y_dim = tile_size_y,
+                addr_mode = AddrMode::RowMajor,
+                stride = 16
+            };
+
+            WMMA {
+                tile_size_k = tile_size_k,
+                load_a = @|a| { t_a = a },
+                load_b = @|b| { t_b = b },
+                load_c = @|c| { copy_single_tile(warp, c, acc) },
+                wmma = @||  { wmma_single_tile(warp, t_a, t_b, acc) },
+                store_d = @|d| { copy_single_tile(warp, acc, d) },
+            }
+        }
+    };
+
+
+    fn @create_warp_tensors (_widx: i32, warp: Group) {
+        let mut inner_warp_tensors = @|_tile : i32| -> WMMA {
+            WMMA {
+                tile_size_k = 0,
+                load_a = @|_a| {},
+                load_b = @|_b| {},
+                load_c = @|_c| {},
+                wmma = @||   {},
+                store_d = @|_d| {},
+            }
+        };
+
+        for _tile in unroll(0, warp_x_tiles * warp_y_tiles) {
+            //let mut acc_fragment : [c_element_type * 256];
+            //let buffer = bitcast[&mut addrspace(3) [c_element_type]](&acc_fragment(0));
+            let new_wmma = @create_wmma(warp);
+
+            let inner_warp_tensors_nomut = inner_warp_tensors;
+            inner_warp_tensors = @|tile : i32| -> WMMA {
+                if tile == 0 { new_wmma } else { inner_warp_tensors_nomut(tile - 1) }
+            };
+        }
+
+        let inner_warp_tensors_nomut = inner_warp_tensors;
+        let warp_tensors = @|tile_x : i32| { @|tile_y : i32| {
+            inner_warp_tensors_nomut(tile_x * warp_y_tiles + tile_y)
+        }};
+
+        warp_tensors
+    }
+
+
+    fn @matrix_multiply_prgmod_block_wmma(
+        block : Group,
+        a_block_tensor : Tensor[a_element_type],
+        b_block_tensor : Tensor[b_element_type],
+        c_block_tensor : Tensor[c_element_type],
+        d_block_tensor : Tensor[c_element_type]
+    ) -> () {
+        let shared_a_size = (tile_size_k * k_shared_tiles + skew_half) * block_size_y;
+        let shared_b_size = (tile_size_k * k_shared_tiles + skew_half) * block_size_x;
+
+        let shared_memory_a = bitcast[&mut [a_element_type]](block.alloc(sizeof[a_element_type]() as i32 * shared_a_size));
+        let shared_memory_b = bitcast[&mut [b_element_type]](block.alloc(sizeof[b_element_type]() as i32 * shared_b_size));
+
+        let a_shared_tensor = Tensor[a_element_type] {
+            data = shared_memory_a,
+            x_dim = tile_size_k * k_shared_tiles,
+            y_dim = block_size_y,
+            addr_mode = AddrMode::RowMajor,
+            stride = tile_size_k * k_shared_tiles + skew_half
+        };
+        let b_shared_tensor = Tensor[b_element_type] {
+            data = shared_memory_b,
+            x_dim = block_size_x,
+            y_dim = tile_size_k * k_shared_tiles,
+            addr_mode = AddrMode::ColMajor,
+            stride = tile_size_k * k_shared_tiles + skew_half
+        };
+
+        for widx, warp in specific_subgroups(block, GroupType::Warp) {
+            let warp_tensors = @create_warp_tensors(widx, warp);
+
+            let warp_x = (widx % block_x_warps) * warp_size_x;
+            let warp_y = (widx / block_x_warps) * warp_size_y;
+
+            // Load C fragments into registers
+            for tile_x in unroll(0, warp_x_tiles) {
+                for tile_y in unroll(0, warp_y_tiles) {
+                    let local_x = tile_x * tile_size_x;
+                    let local_y = tile_y * tile_size_y;
+
+                    let block_x = warp_x + local_x;
+                    let block_y = warp_y + local_y;
+
+                    let c_fragment_tensor = sub_tensor(c_block_tensor, block_x, block_y, tile_size_x, tile_size_y);
+                    warp_tensors(tile_x)(tile_y).load_c(c_fragment_tensor);
+                }
+            }
+
+            let k_step = tile_size_k * k_shared_tiles;
+
+            for global_k in range_step(0, k, k_step) {
+                let elements_per_operation = (sizeof[i32]() as i32 * 4) / (sizeof[a_element_type]() as i32);
+                let operations_per_lane = k_step / elements_per_operation;
+                let lanes_per_step = (warp.num_subgroups * block.num_subgroups) / operations_per_lane;
+                let lanes_per_warp = wave_size / operations_per_lane;
+
+                for lane_id, _lane in specific_subgroups(warp, GroupType::Thread) {
+                    for y_index in unroll_step(0, block_size_y, lanes_per_step) {
+                        let local_y = y_index + widx * lanes_per_warp + (lane_id / operations_per_lane);
+                        let local_k = (lane_id % operations_per_lane) * elements_per_operation;
+
+                        let global_k_inner = global_k + local_k;
+
+                        let src_ptr = bitcast[&simd[i32 * 4]](&a_block_tensor.data(addr_tensor(global_k_inner, local_y, a_block_tensor)));
+                        let target_ptr = bitcast[&mut simd[i32 * 4]](&mut a_shared_tensor.data(addr_tensor(local_k, local_y, a_shared_tensor)));
+                        *target_ptr = *src_ptr;
+                    }
+                    for x_index in unroll_step(0, block_size_x, lanes_per_step) {
+                        let local_x = x_index + widx * lanes_per_warp + (lane_id / operations_per_lane);
+                        let local_k = (lane_id % operations_per_lane) * elements_per_operation;
+
+                        let global_k_inner = global_k + local_k;
+
+                        let src_ptr = bitcast[&simd[i32 * 4]](&b_block_tensor.data(addr_tensor(local_x, global_k_inner, b_block_tensor)));
+                        let target_ptr = bitcast[&mut simd[i32 * 4]](&mut b_shared_tensor.data(addr_tensor(local_x, local_k, b_shared_tensor)));
+                        *target_ptr = *src_ptr;
+                    }
+                }
+
+                block.barrier();
+
+                let a_warp_tensor = sub_tensor(a_shared_tensor,      0, warp_y,      k_step, warp_size_y);
+                let b_warp_tensor = sub_tensor(b_shared_tensor, warp_x,      0, warp_size_x,      k_step);
+
+                for local_k in unroll_step(0, k_step, tile_size_k) {
+                    for tile_x in unroll(0, warp_x_tiles) {
+                        for tile_y in unroll(0, warp_y_tiles) {
+                            let local_x = tile_x * tile_size_x;
+                            let local_y = tile_y * tile_size_y;
+
+                            let a_fragment_tensor = sub_tensor(a_warp_tensor, local_k, local_y, tile_size_k, tile_size_y);
+                            let b_fragment_tensor = sub_tensor(b_warp_tensor, local_x, local_k, tile_size_x, tile_size_k);
+
+                            warp_tensors(tile_x)(tile_y).load_a(a_fragment_tensor);
+                            warp_tensors(tile_x)(tile_y).load_b(b_fragment_tensor);
+                            warp_tensors(tile_x)(tile_y).wmma();
+                        }
+                    }
+
+                }
+
+                block.barrier();
+            }
+
+            for tile_x in unroll(0, warp_x_tiles) {
+                for tile_y in unroll(0, warp_y_tiles) {
+                    let local_x = tile_x * tile_size_x;
+                    let local_y = tile_y * tile_size_y;
+
+                    let block_x = warp_x + local_x;
+                    let block_y = warp_y + local_y;
+
+                    let d_fragment_tensor = sub_tensor(d_block_tensor, block_x, block_y, tile_size_x, tile_size_y);
+
+                    warp_tensors(tile_x)(tile_y).store_d(d_fragment_tensor);
+                }
+            }
+        }
+    }
+
+
+    let matrix_total_blocks = matrix_x_blocks * matrix_y_blocks;
+
+    // blocks
+    for bidx, block in specific_subgroups(group, GroupType::Block) {
+        for block_index in range_step(bidx, matrix_total_blocks, group.num_subgroups) {
+            let block_offset_x = (block_index % matrix_x_blocks) * block_size_x;
+            let block_offset_y = (block_index / matrix_x_blocks) * block_size_y;
+
+            let a_block_tensor = sub_tensor(a,              0, block_offset_y,            k, block_size_y);
+            let b_block_tensor = sub_tensor(b, block_offset_x,              0, block_size_x,            k);
+            let c_block_tensor = sub_tensor(c, block_offset_x, block_offset_y, block_size_x, block_size_y);
+            let d_block_tensor = sub_tensor(d, block_offset_x, block_offset_y, block_size_x, block_size_y);
+
+            matrix_multiply_prgmod_block_wmma(block, a_block_tensor, b_block_tensor, c_block_tensor, d_block_tensor);
+        }
+    }
+
+}
+
+
 
 fn matrix_multiply_naive (
     a : Tensor[a_element_type],
@@ -715,15 +1026,14 @@ static debug_prints = false;
 #[export]
 fn entry_fn() -> i32 {
 
-    //let dev = nvvm_device(0);
-    let dev = cpu_device(0);
-    dev.platform.parallelize(4);
-    dev.platform.vectorize(4);
-    dev.platform.unroll(4);
-    //dev.platform.grid_size(M*N);
-    //dev.platform.warps_per_block(8);
-
     //let dev = cpu_device(0);
+    //dev.platform.parallelize(4);
+    //dev.platform.vectorize(4);
+    //dev.platform.unroll(4);
+
+    let dev = nvvm_device(0);
+    //dev.platform.grid_size(M*N);
+    dev.platform.warps_per_block(8);
 
     // dev : Device
     // platform : generic NVVM
@@ -737,7 +1047,7 @@ fn entry_fn() -> i32 {
 
     let acc_matmul = @|a : Tensor[a_element_type], b : Tensor[b_element_type], c : Tensor[c_element_type], d : Tensor[c_element_type]| {
         // nvvm and cpu support
-        matrix_multiplyAv3(group, a, b, c, d);
+        //matrix_multiplyAv3(group, a, b, c, d);
 
         // nvvm support only yet; requires warps_per_block(8) for correct results
         //matrix_multiplyB(group, a, b, c, d);
@@ -745,6 +1055,7 @@ fn entry_fn() -> i32 {
         // nvvm support only yet; requires warps_per_block(8)
         // using WMMA if enabled in intrinsics; broken iteration, incorrect results, or compiler crashes
         //matrix_multiplyD(group, a, b, c, d);
+        matrix_multiplyD_shared(group, a, b, c, d);
     };
 	let ref_matmul = matrix_multiply_naive;
 
