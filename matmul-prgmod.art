@@ -493,7 +493,7 @@ fn @matrix_multiplyD(
         d_block_tensor : Tensor[c_element_type]
     ) -> () {
 
-        for widx, warp in specific_subgroups(group, GroupType::Warp) {
+        for widx, warp in specific_subgroups(block, GroupType::Warp) {
         //for widx, warp in subgroups(block) {
 
             let warp_tensors = @create_warp_tensors(widx, warp);
