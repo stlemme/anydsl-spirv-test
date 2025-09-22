@@ -117,7 +117,7 @@ endforeach()
 # add_executable(reduction-sum ${_program_reduction_sum})
 # target_link_libraries(reduction-sum PRIVATE runtime)
 
-set(_src_prgmod prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art prgmod-mapping-cpu.art)
+set(_src_prgmod prgmod-common.art prgmod-typetraits.art prgmod-mapping-nvvm.art prgmod-mapping-levelzero.art prgmod-mapping-cpu.art)
 
 set(_src_matmul matmul-prgmod.art ${_src_prgmod})
 anydsl_runtime_wrap(_program_matmul

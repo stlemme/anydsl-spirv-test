@@ -98,6 +98,7 @@ fn entry_fn() -> i32 {
 
     let dev = nvvm_device(0);
     //let dev = cpu_device(0);
+    //let dev = levelzero_device(0);
 
     let group = make_group(dev);
 
