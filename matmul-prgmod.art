@@ -27,7 +27,7 @@ static clayout = AddrMode::RowMajor;
 
 static tile_size_x = 16;
 static tile_size_y = 16;
-static tile_size_k = 16;
+//static tile_size_k = 16;
 
 
 fn @matrix_multiplyA(
@@ -1054,8 +1054,8 @@ fn entry_fn() -> i32 {
 
         // nvvm support only yet; requires warps_per_block(8)
         // using WMMA if enabled in intrinsics; broken iteration, incorrect results, or compiler crashes
-        //matrix_multiplyD(group, a, b, c, d);
-        matrix_multiplyD_shared(group, a, b, c, d);
+        matrix_multiplyD(group, a, b, c, d);
+        //matrix_multiplyD_shared(group, a, b, c, d);
     };
 	let ref_matmul = matrix_multiply_naive;
 
