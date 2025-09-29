@@ -85,6 +85,68 @@ fn @matrix_multiplyA(
     }
 }
 
+
+fn @matrix_multiplyA_Accessor(
+    group: Group,
+    ai : AccessorTensor[a_element_type],
+    bi : AccessorTensor[b_element_type],
+    ci : AccessorTensor[c_element_type],
+    di : AccessorTensor[c_element_type]
+) -> () {
+
+    let a = tensor_view[f32, a_element_type](ai);
+    let b = tensor_view[f32, b_element_type](bi);
+    let c = tensor_view[f32, c_element_type](ci);
+    let d = tensor_view[f32, c_element_type](di);
+
+    let m = a.y_dim;
+    let n = b.x_dim;
+    //assert(a.x_dim == b.y_dim);
+    let k = a.x_dim;
+
+    let num = m*n;
+    let bs = 128;
+
+	let scratchpad_size = 0; //(num / bs) * sizeof[i32]() as i32;
+
+
+    // blocks
+    for pbidx, block in subgroups(group) {
+
+        for bidx in range_step(pbidx, num/block.size, group.num_subgroups) {
+
+	        // warps
+	        for widx, warp in subgroups(block) {
+
+                // threads
+		        for tidx, _thread in subgroups(warp) {
+
+                    let gidx = bidx*block.size + widx*warp.size + tidx;
+
+                    let y = gidx / n;
+                    let x = gidx % n;
+
+                    let mut rv = 0 : f32;
+
+                    for i in range(0, k) {
+                        let av = a.read(i, y);
+                        let bv = b.read(x, i);
+
+                        rv += av * bv;
+                    }
+
+                    let cv = c.read(x, y);
+
+                    d.write(x, y, (rv + cv));
+                }
+
+            }
+
+        }
+    }
+}
+
+
 fn @matrix_multiplyAv2(
     group: Group,
     a : Tensor[a_element_type],
@@ -1043,7 +1105,7 @@ fn entry_fn() -> i32 {
     //opt.grid_size(4096);
     //opt(Options::GridSize, 4096);
 
-	let group = make_group(dev);
+    let group = make_group(dev);
 
     let acc_matmul = @|a : Tensor[a_element_type], b : Tensor[b_element_type], c : Tensor[c_element_type], d : Tensor[c_element_type]| {
         // nvvm and cpu support
@@ -1054,8 +1116,15 @@ fn entry_fn() -> i32 {
 
         // nvvm support only yet; requires warps_per_block(8)
         // using WMMA if enabled in intrinsics; broken iteration, incorrect results, or compiler crashes
-        matrix_multiplyD(group, a, b, c, d);
+        //matrix_multiplyD(group, a, b, c, d);
         //matrix_multiplyD_shared(group, a, b, c, d);
+
+        let a_accessor_tensor = convert_tensor[a_element_type](a);
+        let b_accessor_tensor = convert_tensor[b_element_type](b);
+        let c_accessor_tensor = convert_tensor[c_element_type](c);
+        let d_accessor_tensor = convert_tensor[c_element_type](d);
+
+        matrix_multiplyA_Accessor(group, a_accessor_tensor, b_accessor_tensor, c_accessor_tensor, d_accessor_tensor);
     };
 	let ref_matmul = matrix_multiply_naive;
 

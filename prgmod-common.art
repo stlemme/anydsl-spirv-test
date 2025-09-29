@@ -161,6 +161,61 @@ fn @tensor_write[V, T](x: i32, y: i32, t: Tensor[T], value: V, implicit convert:
 }
 
 
+
+
+struct AccessorTensor[T] {
+    x_dim : i32,
+    y_dim : i32,
+    read : fn(i32, i32) -> T,
+    write : fn(i32, i32, T) -> ()
+}
+
+fn @tensor_view[V, T](t : AccessorTensor[T], implicit convert_to: Convert[T, V], implicit convert_from: Convert[V, T]) = AccessorTensor[V] {
+    x_dim = t.x_dim,
+    y_dim = t.y_dim,
+    read = @|x: i32, y: i32| { convert_to.apply(t.read(x, y)) },
+    write = @|x: i32, y: i32, val: V| { t.write(x, y, convert_from.apply(val)); }
+};
+
+//TODO: not PEing this will trigger some bug in CC, investigate.
+fn @convert_tensor[T](matrix : Tensor[T]) -> AccessorTensor[T] {
+    let accessor = Accessor[T] {
+        get = @|i| {
+                matrix.data(i)
+        },
+        set = @|i, val| {
+                matrix.data(i) = val;
+        },
+        len = || matrix.x_dim * matrix.y_dim * sizeof[T]() as i32,
+    };
+    fn @addr_compute (x : i32, y : i32, addr_mode: AddrMode, stride: i32) = match addr_mode {
+        AddrMode::RowMajor => x + y * stride,
+        AddrMode::ColMajor => x * stride + y
+    };
+    AccessorTensor[T] {
+        x_dim = matrix.x_dim,
+        y_dim = matrix.y_dim,
+        read = @|x: i32, y: i32| { accessor.get(addr_compute(x, y, matrix.addr_mode, matrix.stride)) },
+        write = @|x: i32, y: i32, val: T| { accessor.set(addr_compute(x, y, matrix.addr_mode, matrix.stride), val); }
+    }
+}
+
+fn @sub_tensor_accessor[T](t : AccessorTensor[T], x0 : i32, y0 : i32, xs : i32, ys : i32) {
+    AccessorTensor[T] {
+        x_dim = xs,
+        y_dim = ys,
+        read = @|x: i32, y: i32| { t.read(x + x0, y + y0) },
+        write = @|x: i32, y: i32, val: T| { t.write(x + x0, y + y0, val); }
+    }
+}
+
+
+
+
+
+
+
+
 fn @pick_single_thread(body: fn(i32, SubGroup)->()) -> fn(Group)->() {
 	@|group| {
 		if group.size > 1 {
