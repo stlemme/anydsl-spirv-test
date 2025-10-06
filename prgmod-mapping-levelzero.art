@@ -5,10 +5,23 @@ fn ze_thread_intrinsics() = GroupIntrinsics {
 };
 
 
-fn ze_warp_intrinsics(tile_size_k: i32) = GroupIntrinsics {
+struct LZERO_WMMA_OP[T] {
+	wmma: Op[(), WMMA],
+}
+
+implicit = LZERO_WMMA_OP[f64] { wmma = Op[(), WMMA]::Generic };
+implicit = LZERO_WMMA_OP[f16] { wmma = Op[(), WMMA]::Generic };
+
+//static tile_size_k = 16;
+
+implicit = LZERO_WMMA_OP[f32] {
+	wmma = Op[(), WMMA]::Fn(@|| alchemist_create_wmma(tile_size_k))
+};
+
+fn ze_warp_intrinsics(tile_size_k: i32, implicit wmma_op : LZERO_WMMA_OP[c_element_type]) = GroupIntrinsics {
 	//barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
 	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
-	wmma = Op[   (), WMMA]::Fn(@|| alchemist_create_wmma(tile_size_k))
+	wmma = wmma_op.wmma
 };
 
 fn ze_block_intrinsics() = GroupIntrinsics {
