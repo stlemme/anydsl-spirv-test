@@ -1,0 +1,530 @@
+
+/*static warp_size:i32 = 32;
+
+fn nvvm_thread_intrinsics() = GroupIntrinsics {
+};*/
+
+struct HSA_WMMA_OP[T] {
+	wmma: Op[(), WMMA],
+}
+
+implicit = HSA_WMMA_OP[f64] { wmma = Op[(), WMMA]::Generic };
+//implicit = HSA_WMMA_OP[f16] { wmma = Op[(), WMMA]::Generic };
+
+//static tile_size_k = 16;
+
+implicit = HSA_WMMA_OP[f16] {
+	wmma = Op[(), WMMA]::Fn(@|| hsa_create_wmma_f16(tile_size_k))
+};
+implicit = HSA_WMMA_OP[f32] {
+	wmma = Op[(), WMMA]::Fn(@|| hsa_create_wmma_f32(tile_size_k))
+};
+
+/*fn nvvm_warp_intrinsics(tile_size_k: i32, implicit wmma_op : HSA_WMMA_OP[c_element_type]) = GroupIntrinsics {
+	barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
+	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
+	//wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+        wmma = wmma_op.wmma
+};*/
+
+/*fn nvvm_block_intrinsics() = GroupIntrinsics {
+	barrier_any = Op[Accessor[u8], u8]::Fn(nvvm_block_barrier_any)
+};*/
+
+fn hsa_warp_intrinsics(tile_size_k: i32, implicit wmma_op : HSA_WMMA_OP[c_element_type]) = GroupIntrinsics {
+	//barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
+	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
+	//wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+        wmma = wmma_op.wmma
+};
+
+
+fn @make_hsa_thread(_idx: i32) -> Group {
+	Group {
+		size = 1,
+		alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+		barrier = @|| {
+			// cuda_threadfence()
+		},
+		subgroups = @|body| @|| {
+			let idx = 0;
+			let thread = make_hsa_thread(idx);
+			@body(idx, thread)
+		},
+		num_subgroups = 1,
+		specific = GroupType::Thread,
+		intrinsics = GroupIntrinsics {}
+	}
+}
+
+/*fn @nvvm_warp_barrier_any(pred:Accessor[u8]) -> u8 {
+	let tidx = nvvm_laneid() as i32;
+	let mut result:bool = false;
+	for i in range_step(tidx, pred.len(), warp_size) {
+		let val = i < pred.len() && pred.get(i) != 0;
+		result |= nvvm_warp_sync_any(0xFFFFFFFF, val)
+		//cuda_warp_sync_any(0xFFFFFFFF, pred.get(tidx) as i32) as u8
+	}
+	if result { 1 } else { 0 }
+}*/
+
+// TODO: scope implementation and use group instance of warp to check bounds, etc.
+/*
+fn @nvvm_warp_shuffle_i32(value: i32, src_lane: i32) -> i32 {
+	let membermask = 0xFFFFFFFF as u32;
+	let width = warp_size;
+	nvvm_warp_shfl_i32(membermask, value, src_lane, width)
+}
+*/
+
+// TODO: slice a warp into sub warps
+
+fn @make_hsa_warp(_idx: i32, _num_warps_per_block: i32) -> Group {
+	let tile_size_k = 16;
+
+	Group {
+		size = warp_size,
+		alloc = |size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+		barrier = @|| { nvvm_warp_sync(0xFFFFFFFF) },
+		subgroups = @|body| @|| {
+			let idx = amdgcn_lane_id() as i32;
+			let thread = make_hsa_thread(idx);
+			@body(idx, thread)
+		},
+		num_subgroups = warp_size,
+		specific = GroupType::Warp,
+		intrinsics = hsa_warp_intrinsics(tile_size_k)
+	}
+}
+
+/*fn @nvvm_block_barrier_any(pred:Accessor[u8]) -> u8 {
+	let tidx = nvvm_read_ptx_sreg_tid_x();
+	let mut result:u8 = 0;
+	for i in range_step(tidx, pred.len(), warp_size) {
+		let val = if i < pred.len() { pred.get(i) } else { 0 };
+		result |= nvvm_block_sync_any(val as i32) as u8
+	}
+	result
+}*/
+
+fn @make_hsa_block(_idx: i32, block_size: i32) -> Group {
+	let num_warps_per_block = (block_size + warp_size - 1) / warp_size;
+
+	Group {
+		size = block_size,
+		alloc = @|size| { let ptr = reserve_shared[u8](size); bitcast[&mut[u8]](ptr) },
+		barrier = @|| { nvvm_block_sync() },
+		subgroups = @|body| @|| {
+			let idx = amdgcn_workitem_id_x() / warp_size;
+			let warp = make_hsa_warp(idx, num_warps_per_block);
+			@body(idx, warp)
+		},
+		num_subgroups = num_warps_per_block,
+		specific = GroupType::Block,
+		intrinsics = GroupIntrinsics {}
+	}
+}
+
+/*struct NVVM {
+	device_id: i32,
+	grid_size: fn(i32) -> (),
+	block_size: fn(i32) -> (),
+	warps_per_block: fn(i32) -> ()
+}*/
+
+fn hsa_device(idx: i32) -> Device[NVVM] {
+	let acc = amdgpu_hsa_accelerator(idx);
+
+	let mut grid_size = 2048;
+	let mut block_size = 128;
+
+	let buffer = Buffer { size = 0, data = bitcast[&mut [i8]](0), device = 0 };
+	let mut buffer_offset:i32 = 0;
+
+	let nvvm = NVVM {
+		device_id = idx,
+		grid_size = @|num| { grid_size = num; },
+		block_size = @|bs| { block_size = bs; },
+		warps_per_block = @|num| { block_size = num * warp_size; }
+	};
+
+	//let device_name = runtime_device_name(runtime_device(1, nvvm.device_id));
+	//print_string(device_name); print_string("\n");
+
+	Device[NVVM] {
+		platform = nvvm,
+		device_id = runtime_device(1, nvvm.device_id),
+		alloc = @|size| acc.alloc(size),
+		root = @|| {
+			let fixed_grid_size = grid_size;
+			let fixed_block_size = block_size;
+
+			Group {
+				size = fixed_grid_size,
+				subgroups = @|body| @|| {
+					print_string("grid_size: "); print_i32(fixed_grid_size); print_string(" | block_size: "); print_i32(fixed_block_size); print_string("\n");
+					for _ in acc.exec(( fixed_grid_size, 1, 1), (fixed_block_size, 1, 1)) {
+
+						let idx = amdgcn_workgroup_id_x();
+						let block = make_hsa_block(idx, fixed_block_size);
+
+						@body(idx, block)
+					}
+				},
+				alloc = @|size| {
+					let ptr = bitcast[&mut[u8]](&buffer.data(buffer_offset));
+					//buffer_offset += size;
+					ptr
+				},
+				barrier = @|| { acc.sync(); },
+				num_subgroups = (fixed_grid_size + fixed_block_size - 1) / fixed_block_size,
+				specific = GroupType::Grid,
+				intrinsics = GroupIntrinsics {
+					get_clock = Op[ (), i64]::Fn(get_kernel_time)
+				}
+			}
+		}
+	}
+}
+
+
+/*fn @shared_mem[T](body: fn(Accessor[T])->()) -> fn(Group, i32)->() {
+
+	@|group, size| {
+		pe_info("shared_mem[T]() - group.size", group.size);
+		pe_info("shared_mem[T]() - size", size);
+
+		// TODO: pass down topology information
+		let num_warps_per_block = 4; // (block_size + warp_size - 1) / warp_size;
+
+		let array = match (group.specific) {
+			GroupType::Grid => {
+				let size_type = sizeof[T]() as i32;
+				let mem_size = size * if size_type > 1 { size_type } else { 1 };
+				pe_info("shared_mem[T]() - alloc_cuda()", mem_size);
+				let mem = group.alloc(mem_size);
+				let ptr = bitcast[&mut[T]](mem);
+
+				Accessor[T] {
+					get = @|i| ptr(i),
+					set = @|i, val| { ptr(i) = val },
+					len = @|| size
+				}
+			},
+
+			GroupType::Block => {
+				let mem_size = size;
+				pe_info("shared_mem[T]() - reserve_shared[T]()", mem_size);
+				let ptr = reserve_shared[T](mem_size);
+				//let ptr = bitcast[&mut addrspace(3)[T]](mem);
+
+				Accessor[T] {
+					get = @|i| ptr(i),
+					set = @|i, val| { ptr(i) = val },
+					len = @|| size
+				}
+			},
+
+			GroupType::Warp => {
+				let mem_size = num_warps_per_block * size;
+				pe_info("shared_mem[T]() - reserve_shared[T]()", mem_size);
+				let ptr = reserve_shared[T](mem_size);
+				//let ptr = bitcast[&mut addrspace(3)[T]](mem);
+
+				// TODO: may use bitmask for offset computation
+				let idx = amdgcn_workitem_id_x() / warp_size;
+				let offset = idx * warp_size;
+
+				Accessor[T] {
+					get = @|i| ptr(offset + i),
+					set = @|i, val| { ptr(offset + i) = val },
+					len = @|| size
+				}
+
+			},
+
+			_ => {
+				let mut value:T;
+
+				Accessor[T] {
+					get = @|_| value,
+					set = @|_, val| { value = val },
+					len = @|| 1
+				}
+			}
+		};
+
+		body(array)
+	}
+}*/
+
+/*type f16x2 = simd[f16 * 2];
+
+//type nvvm_acc_datatype = (f16x2, f16x2, f16x2, f16x2);
+type nvvm_acc_datatype = (f32, f32, f32, f32, f32, f32, f32, f32);
+type nvvm_mat_datatype = (f16x2, f16x2, f16x2, f16x2, f16x2, f16x2, f16x2, f16x2);
+
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.mma.row.row.f32.f32")]
+fn nvvm_wmma_row_row_f32 (_a0 : simd[f16 * 2], _a1 : simd[f16 * 2], _a2 : simd[f16 * 2], _a3 : simd[f16 * 2], _a4 : simd[f16 * 2], _a5 : simd[f16 * 2], _a6 : simd[f16 * 2], _a7 : simd[f16 * 2], _b0 : simd[f16 * 2], _b1 : simd[f16 * 2], _b2 : simd[f16 * 2], _b3 : simd[f16 * 2], _b4 : simd[f16 * 2], _b5 : simd[f16 * 2], _b6 : simd[f16 * 2], _b7 : simd[f16 * 2], _c0 : f32, _c1 : f32, _c2 : f32, _c3 : f32, _c4 : f32, _c5 : f32, _c6 : f32, _c7 : f32) -> (f32, f32, f32, f32, f32, f32, f32, f32);
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.mma.col.row.f32.f32")]
+fn nvvm_wmma_col_row_f32 (_a0 : simd[f16 * 2], _a1 : simd[f16 * 2], _a2 : simd[f16 * 2], _a3 : simd[f16 * 2], _a4 : simd[f16 * 2], _a5 : simd[f16 * 2], _a6 : simd[f16 * 2], _a7 : simd[f16 * 2], _b0 : simd[f16 * 2], _b1 : simd[f16 * 2], _b2 : simd[f16 * 2], _b3 : simd[f16 * 2], _b4 : simd[f16 * 2], _b5 : simd[f16 * 2], _b6 : simd[f16 * 2], _b7 : simd[f16 * 2], _c0 : f32, _c1 : f32, _c2 : f32, _c3 : f32, _c4 : f32, _c5 : f32, _c6 : f32, _c7 : f32) -> (f32, f32, f32, f32, f32, f32, f32, f32);
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.mma.row.col.f32.f32")]
+fn nvvm_wmma_row_col_f32 (_a0 : simd[f16 * 2], _a1 : simd[f16 * 2], _a2 : simd[f16 * 2], _a3 : simd[f16 * 2], _a4 : simd[f16 * 2], _a5 : simd[f16 * 2], _a6 : simd[f16 * 2], _a7 : simd[f16 * 2], _b0 : simd[f16 * 2], _b1 : simd[f16 * 2], _b2 : simd[f16 * 2], _b3 : simd[f16 * 2], _b4 : simd[f16 * 2], _b5 : simd[f16 * 2], _b6 : simd[f16 * 2], _b7 : simd[f16 * 2], _c0 : f32, _c1 : f32, _c2 : f32, _c3 : f32, _c4 : f32, _c5 : f32, _c6 : f32, _c7 : f32) -> (f32, f32, f32, f32, f32, f32, f32, f32);
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.mma.col.col.f32.f32")]
+fn nvvm_wmma_col_col_f32 (_a0 : simd[f16 * 2], _a1 : simd[f16 * 2], _a2 : simd[f16 * 2], _a3 : simd[f16 * 2], _a4 : simd[f16 * 2], _a5 : simd[f16 * 2], _a6 : simd[f16 * 2], _a7 : simd[f16 * 2], _b0 : simd[f16 * 2], _b1 : simd[f16 * 2], _b2 : simd[f16 * 2], _b3 : simd[f16 * 2], _b4 : simd[f16 * 2], _b5 : simd[f16 * 2], _b6 : simd[f16 * 2], _b7 : simd[f16 * 2], _c0 : f32, _c1 : f32, _c2 : f32, _c3 : f32, _c4 : f32, _c5 : f32, _c6 : f32, _c7 : f32) -> (f32, f32, f32, f32, f32, f32, f32, f32);
+
+fn @nvvm_wmma_expand (
+	a_fragment : nvvm_mat_datatype,
+	b_fragment : nvvm_mat_datatype,
+	c_fragment : nvvm_acc_datatype,
+	a_mode : AddrMode, b_mode : AddrMode
+) -> nvvm_acc_datatype {
+    let (a1, a2, a3, a4, a5, a6, a7, a8) = a_fragment;
+    let (b1, b2, b3, b4, b5, b6, b7, b8) = b_fragment;
+    let (c1, c2, c3, c4) = c_fragment;
+
+    match (a_mode, b_mode) {
+        (AddrMode::RowMajor, AddrMode::RowMajor) =>
+            nvvm_wmma_row_row(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4),
+        (AddrMode::ColMajor, AddrMode::RowMajor) =>
+            nvvm_wmma_col_row(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4),
+        (AddrMode::RowMajor, AddrMode::ColMajor) =>
+            nvvm_wmma_row_col(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4),
+        (AddrMode::ColMajor, AddrMode::ColMajor) =>
+            nvvm_wmma_col_col(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4)
+    }
+}
+
+fn @nvvm_wmma_expand (a_fragment : nvvm_mat_datatype, b_fragment : nvvm_mat_datatype, c_fragment : nvvm_acc_datatype, a_mode : AddrMode, b_mode : AddrMode) -> nvvm_acc_datatype {
+    let (a1, a2, a3, a4, a5, a6, a7, a8) = a_fragment;
+    let (b1, b2, b3, b4, b5, b6, b7, b8) = b_fragment;
+    let (c1, c2, c3, c4, c5, c6, c7, c8) = c_fragment;
+
+    match (a_mode, b_mode) {
+        (AddrMode::RowMajor, AddrMode::RowMajor) =>
+            nvvm_wmma_row_row_f32(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4, c5, c6, c7, c8),
+        (AddrMode::ColMajor, AddrMode::RowMajor) =>
+            nvvm_wmma_col_row_f32(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4, c5, c6, c7, c8),
+        (AddrMode::RowMajor, AddrMode::ColMajor) =>
+            nvvm_wmma_row_col_f32(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4, c5, c6, c7, c8),
+        (AddrMode::ColMajor, AddrMode::ColMajor) =>
+            nvvm_wmma_col_col_f32(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4, c5, c6, c7, c8)
+    }
+}
+
+fn @wmma_load_expand[T, D](
+	load_row: fn(&i8) -> D, load_row_stride: fn(&i8, i32) -> D,
+	load_col: fn(&i8) -> D, load_col_stride: fn(&i8, i32) -> D
+) = @|tensor : Tensor[T]| {
+	let data = bitcast[&i8](tensor.data);
+
+	fn @select_load(load: fn(&i8) -> D, load_strided: fn(&i8, i32) -> D) {
+		if (tensor.stride > 16) {
+			load_strided(data, tensor.stride)
+		} else {
+			load(data)
+		}
+	}
+
+	match tensor.addr_mode {
+		AddrMode::RowMajor => select_load(load_row, load_row_stride),
+		AddrMode::ColMajor => select_load(load_col, load_col_stride)
+	}
+};
+
+//type store_fn = fn(&mut i8, f16x2, f16x2, f16x2, f16x2) -> ();
+//type store_stride_fn = fn(&mut i8, f16x2, f16x2, f16x2, f16x2, i32) -> ();
+type store_fn = fn(&mut i8, f32, f32, f32, f32, f32, f32, f32, f32) -> ();
+type store_stride_fn = fn(&mut i8, f32, f32, f32, f32, f32, f32, f32, f32, i32) -> ();
+
+fn @wmma_store_expand[T] (
+	store_row: store_fn, store_row_stride: store_stride_fn,
+	store_col: store_fn, store_col_stride: store_stride_fn
+) = @|tensor : Tensor[T], acc_fragment : nvvm_acc_datatype| {
+    let data = bitcast[&mut i8](tensor.data);
+    let (acc1, acc2, acc3, acc4, acc5, acc6, acc7, acc8) = acc_fragment;
+
+	fn @select_store(store: store_fn, store_strided: store_stride_fn) {
+		if (tensor.stride > 16) {
+			store_strided(data, acc1, acc2, acc3, acc4, acc5, acc6, acc7, acc8, tensor.stride)
+		} else {
+			store(data, acc1, acc2, acc3, acc4, acc5, acc6, acc7, acc8)
+		}
+	}
+
+	match tensor.addr_mode {
+		AddrMode::RowMajor => select_store(store_row, store_row_stride),
+		AddrMode::ColMajor => select_store(store_col, store_col_stride)
+	}
+};
+
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.load.c.row.f32.p0")]
+fn nvvm_wmma_load_c_row_f32 (_addr : &i8) -> (f32, f32, f32, f32, f32, f32, f32, f32);
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.load.c.col.f32.p0")]
+fn nvvm_wmma_load_c_col_f32 (_addr : &i8) -> (f32, f32, f32, f32, f32, f32, f32, f32);
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.load.c.row.stride.f32.p0")]
+fn nvvm_wmma_load_c_row_stride_f32 (_addr : &i8, _stride : i32) -> (f32, f32, f32, f32, f32, f32, f32, f32);
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.load.c.col.stride.f32.p0")]
+fn nvvm_wmma_load_c_col_stride_f32 (_addr : &i8, _stride : i32) -> (f32, f32, f32, f32, f32, f32, f32, f32);
+
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.store.d.row.f32.p0")]
+fn nvvm_wmma_store_d_row_f32 (_addr : &mut i8, f32, f32, f32, f32, f32, f32, f32, f32) -> ();
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.store.d.col.f32.p0")]
+fn nvvm_wmma_store_d_col_f32 (_addr : &mut i8, f32, f32, f32, f32, f32, f32, f32, f32) -> ();
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.store.d.row.stride.f32.p0")]
+fn nvvm_wmma_store_d_row_stride_f32 (_addr : &mut i8, f32, f32, f32, f32, f32, f32, f32, f32, _stride : i32) -> ();
+#[import(cc = "device", name = "llvm.nvvm.wmma.m16n16k16.store.d.col.stride.f32.p0")]
+fn nvvm_wmma_store_d_col_stride_f32 (_addr : &mut i8, f32, f32, f32, f32, f32, f32, f32, f32, _stride : i32) -> ();
+
+fn @nvvm_create_wmma(tile_size_k: i32) -> WMMA {
+    let mut t_a : nvvm_mat_datatype;
+    let mut t_b : nvvm_mat_datatype;
+    let mut acc : nvvm_acc_datatype;
+
+    let mut m_a : AddrMode;
+    let mut m_b : AddrMode;
+
+	let load_a = wmma_load_expand[a_element_type, nvvm_mat_datatype](
+		nvvm_wmma_load_a_row, nvvm_wmma_load_a_row_stride,
+		nvvm_wmma_load_a_col, nvvm_wmma_load_a_col_stride
+	);
+	let load_b = wmma_load_expand[b_element_type, nvvm_mat_datatype](
+		nvvm_wmma_load_b_row, nvvm_wmma_load_b_row_stride,
+		nvvm_wmma_load_b_col, nvvm_wmma_load_b_col_stride
+	);
+	let load_c = wmma_load_expand[c_element_type, nvvm_acc_datatype](
+		nvvm_wmma_load_c_row_f32, nvvm_wmma_load_c_row_stride_f32,
+		nvvm_wmma_load_c_col_f32, nvvm_wmma_load_c_col_stride_f32
+	);
+	let store_d = wmma_store_expand[c_element_type](
+		nvvm_wmma_store_d_row_f32, nvvm_wmma_store_d_row_stride_f32,
+		nvvm_wmma_store_d_col_f32, nvvm_wmma_store_d_col_stride_f32
+	);
+
+	// TODO: this support f16 only / need to map different load&store for f32 support
+    WMMA {
+        tile_size_k = tile_size_k,
+             load_a = @|a| { t_a = load_a(a); m_a = a.addr_mode; },
+             load_b = @|b| { t_b = load_b(b); m_b = b.addr_mode; },
+             load_c = @|c| { acc = load_c(c); },
+               wmma = @||  { acc = nvvm_wmma_expand(t_a, t_b, acc, m_a, m_b); },
+            store_d = @|d| { store_d(d, acc); },
+    }
+}*/
+
+type amdgfx11_acc_f16_datatype = simd[c_element_type * 16];
+type amdgfx11_acc_f32_datatype = simd[c_element_type * 8];
+type amdgfx11_mat_datatype = simd[a_element_type * 16];
+
+#[import(cc = "device", name = "llvm.amdgcn.wmma.f16.16x16x16.f16.v16f16.v16f16")] fn amdgfx11_wmma_f16(amdgfx11_mat_datatype, amdgfx11_mat_datatype, amdgfx11_acc_f16_datatype, bool) -> amdgfx11_acc_f16_datatype;
+#[import(cc = "device", name = "llvm.amdgcn.wmma.f32.16x16x16.f16.v8f32.v16f16")] fn amdgfx11_wmma_f32(amdgfx11_mat_datatype, amdgfx11_mat_datatype, amdgfx11_acc_f32_datatype) -> amdgfx11_acc_f32_datatype;
+
+fn @hsa_create_wmma_f16(tile_size_k: i32) -> WMMA {
+    let mut t_a : amdgfx11_mat_datatype;
+    let mut t_b : amdgfx11_mat_datatype;
+    let mut acc : amdgfx11_acc_f16_datatype;
+
+
+    let load_a = @|fragment_tensor : Tensor[a_element_type]| {
+        let lane = amdgcn_workitem_id_x() % 16;
+        let mut fragment : amdgfx11_mat_datatype;
+        for ele in range(0, 16) {
+            fragment(ele) = fragment_tensor.data(addr_tensor(ele, lane, fragment_tensor));
+        }
+        fragment
+    };
+    let load_b = @|fragment_tensor : Tensor[b_element_type]| {
+        let lane = amdgcn_workitem_id_x() % 16;
+        let mut fragment : amdgfx11_mat_datatype;
+        for ele in range(0, 16) {
+            fragment(ele) = fragment_tensor.data(addr_tensor(lane, ele, fragment_tensor));
+        }
+        fragment
+    };
+    let load_c = @|fragment_tensor : Tensor[c_element_type]| {
+        let lane = amdgcn_workitem_id_x() % 16;
+        let mut fragment : amdgfx11_acc_f16_datatype;
+        for ele in range(0, 8) {
+            let r = ele * 2 + (amdgcn_workitem_id_x() % warp_size / 16);
+
+            fragment(ele * 2) = fragment_tensor.data(addr_tensor(lane, r, fragment_tensor));
+        }
+        fragment
+    };
+    let wmma = @|a_fragment : amdgfx11_mat_datatype, b_fragment : amdgfx11_mat_datatype, acc_fragment : amdgfx11_acc_f16_datatype| {
+        amdgfx11_wmma_f16(a_fragment, b_fragment, acc_fragment, false)
+    };
+    let store_d = @|fragment_tensor : Tensor[c_element_type], acc_fragment : amdgfx11_acc_f16_datatype| {
+        let lane = amdgcn_workitem_id_x() % 16;
+
+        for ele in range(0, 8) {
+            let r = ele * 2 + (amdgcn_workitem_id_x() % warp_size / 16);
+
+            fragment_tensor.data(addr_tensor(lane, r, fragment_tensor)) = acc_fragment(ele * 2);
+        }
+    };
+
+    WMMA {
+        tile_size_k = tile_size_k,
+             load_a = @|a| { t_a = load_a(a); },
+             load_b = @|b| { t_b = load_b(b); },
+             load_c = @|c| { acc = load_c(c); },
+               wmma = @||  { acc = wmma(t_a, t_b, acc); },
+            store_d = @|d| { store_d(d, acc); },
+    }
+}
+
+fn @hsa_create_wmma_f32(tile_size_k: i32) -> WMMA {
+    let mut t_a : amdgfx11_mat_datatype;
+    let mut t_b : amdgfx11_mat_datatype;
+    let mut acc : amdgfx11_acc_f32_datatype;
+
+
+    let load_a = @|fragment_tensor : Tensor[a_element_type]| {
+        let lane = amdgcn_workitem_id_x() % 16;
+        let mut fragment : amdgfx11_mat_datatype;
+        for ele in range(0, 16) {
+            fragment(ele) = fragment_tensor.data(addr_tensor(ele, lane, fragment_tensor));
+        }
+        fragment
+    };
+    let load_b = @|fragment_tensor : Tensor[b_element_type]| {
+        let lane = amdgcn_workitem_id_x() % 16;
+        let mut fragment : amdgfx11_mat_datatype;
+        for ele in range(0, 16) {
+            fragment(ele) = fragment_tensor.data(addr_tensor(lane, ele, fragment_tensor));
+        }
+        fragment
+    };
+    let load_c = @|fragment_tensor : Tensor[c_element_type]| {
+        let lane = amdgcn_workitem_id_x() % 16;
+        let mut fragment : amdgfx11_acc_f32_datatype;
+        for ele in range(0, 8) {
+            let r = ele * 2 + (amdgcn_workitem_id_x() % warp_size / 16);
+
+            fragment(ele) = fragment_tensor.data(addr_tensor(lane, r, fragment_tensor));
+        }
+        fragment
+    };
+    let wmma = @|a_fragment : amdgfx11_mat_datatype, b_fragment : amdgfx11_mat_datatype, acc_fragment : amdgfx11_acc_f32_datatype| {
+        amdgfx11_wmma_f32(a_fragment, b_fragment, acc_fragment)
+    };
+    let store_d = @|fragment_tensor : Tensor[c_element_type], acc_fragment : amdgfx11_acc_f32_datatype| {
+        let lane = amdgcn_workitem_id_x() % 16;
+
+        for ele in range(0, 8) {
+            let r = ele * 2 + (amdgcn_workitem_id_x() % warp_size / 16);
+
+            fragment_tensor.data(addr_tensor(lane, r, fragment_tensor)) = acc_fragment(ele);
+        }
+    };
+
+    WMMA {
+        tile_size_k = tile_size_k,
+             load_a = @|a| { t_a = load_a(a); },
+             load_b = @|b| { t_b = load_b(b); },
+             load_c = @|c| { acc = load_c(c); },
+               wmma = @||  { acc = wmma(t_a, t_b, acc); },
+            store_d = @|d| { store_d(d, acc); },
+    }
+}
