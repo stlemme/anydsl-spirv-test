@@ -23,7 +23,7 @@ enum Op[S, T] {
 
 type a_element_type = f16;
 type b_element_type = f16;
-type c_element_type = f16;
+type c_element_type = f32;
 
 struct WMMA {
     tile_size_k: i32,
