@@ -8,7 +8,7 @@ fn ze_thread_intrinsics() = GroupIntrinsics {
 fn ze_warp_intrinsics(tile_size_k: i32) = GroupIntrinsics {
 	//barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),
 	//shuffle_i32 = Op[   (i32,i32), i32]::Fn(nvvm_warp_shuffle_i32)
-	//wmma = Op[   (), WMMA]::Fn(@|| nvvm_create_wmma(tile_size_k))
+	wmma = Op[   (), WMMA]::Fn(@|| alchemist_create_wmma(tile_size_k))
 };
 
 fn ze_block_intrinsics() = GroupIntrinsics {
@@ -245,112 +245,100 @@ fn @shared_mem[T](body: fn(Accessor[T])->()) -> fn(Group, i32)->() {
 }
 */
 
+
 /*
-type f16x2 = simd[f16 * 2];
+ * These require c_element_type to be set to f32!
+ * Also, the tile size on Alchemist is different to the other backends:
+ * The A and B matrices are loaded as 8x16 and 16x8 blocks, and the resulting fragment in C contains 8x8 values.
+ * Consequently, tile_size_x and tile_size_y have to be lowered to 8!
+ */
 
-type nvvm_acc_datatype = (f16x2, f16x2, f16x2, f16x2);
-type nvvm_mat_datatype = (f16x2, f16x2, f16x2, f16x2, f16x2, f16x2, f16x2, f16x2);
+#[import(cc = "device", name = "spirv.coop_matrix.load")] fn spirv_matrix_load[T](&[u8], i32, i32) -> T;
+#[import(cc = "device", name = "spirv.coop_matrix.mad")] fn spirv_matrix_mad[A, B, C](A, B, C) -> C;
+#[import(cc = "device", name = "spirv.coop_matrix.store")] fn spirv_matrix_store[T](&mut [u8], T, i32, i32) -> ();
 
-fn @nvvm_wmma_expand (
-	a_fragment : nvvm_mat_datatype,
-	b_fragment : nvvm_mat_datatype,
-	c_fragment : nvvm_acc_datatype,
-	a_mode : AddrMode, b_mode : AddrMode
-) -> nvvm_acc_datatype {
-    let (a1, a2, a3, a4, a5, a6, a7, a8) = a_fragment;
-    let (b1, b2, b3, b4, b5, b6, b7, b8) = b_fragment;
-    let (c1, c2, c3, c4) = c_fragment;
-
-    match (a_mode, b_mode) {
-        (AddrMode::RowMajor, AddrMode::RowMajor) =>
-            nvvm_wmma_row_row(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4),
-        (AddrMode::ColMajor, AddrMode::RowMajor) =>
-            nvvm_wmma_col_row(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4),
-        (AddrMode::RowMajor, AddrMode::ColMajor) =>
-            nvvm_wmma_row_col(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4),
-        (AddrMode::ColMajor, AddrMode::ColMajor) =>
-            nvvm_wmma_col_col(a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3, b4, b5, b6, b7, b8, c1, c2, c3, c4)
-    }
-}
-
-fn @wmma_load_expand[T, D](
-	load_row: fn(&i8) -> D, load_row_stride: fn(&i8, i32) -> D,
-	load_col: fn(&i8) -> D, load_col_stride: fn(&i8, i32) -> D
-) = @|tensor : Tensor[T]| {
-	let data = bitcast[&i8](tensor.data);
-
-	fn @select_load(load: fn(&i8) -> D, load_strided: fn(&i8, i32) -> D) {
-		if (tensor.stride > 16) {
-			load_strided(data, tensor.stride)
-		} else {
-			load(data)
-		}
-	}
-
-	match tensor.addr_mode {
-		AddrMode::RowMajor => select_load(load_row, load_row_stride),
-		AddrMode::ColMajor => select_load(load_col, load_col_stride)
-	}
+fn @spv_match_layout(addr_mode : AddrMode) -> i32 = match addr_mode {
+    AddrMode::RowMajor => 0,
+    AddrMode::ColMajor => 1
 };
 
-type store_fn = fn(&mut i8, f16x2, f16x2, f16x2, f16x2) -> ();
-type store_stride_fn = fn(&mut i8, f16x2, f16x2, f16x2, f16x2, i32) -> ();
+type_ext alchemist_acc_datatype   = { "OpTypeCooperativeMatrixKHR", "float", "3",  "8",  "8", "2", "SPV_KHR_cooperative_matrix" };
+type_ext alchemist_mat_a_datatype = { "OpTypeCooperativeMatrixKHR",  "half", "3",  "8", "16", "0", "SPV_KHR_cooperative_matrix" };
+type_ext alchemist_mat_b_datatype = { "OpTypeCooperativeMatrixKHR",  "half", "3", "16",  "8", "1", "SPV_KHR_cooperative_matrix" };
 
-fn @wmma_store_expand[T] (
-	store_row: store_fn, store_row_stride: store_stride_fn,
-	store_col: store_fn, store_col_stride: store_stride_fn
-) = @|tensor : Tensor[T], acc_fragment : nvvm_acc_datatype| {
-    let data = bitcast[&mut i8](tensor.data);
-    let (acc1, acc2, acc3, acc4) = acc_fragment;
+fn @alchemist_create_wmma(tile_size_k: i32) -> WMMA {
+    let mut t_a : alchemist_mat_a_datatype;
+    let mut t_b : alchemist_mat_b_datatype;
+    let mut acc : alchemist_acc_datatype;
 
-	fn @select_store(store: store_fn, store_strided: store_stride_fn) {
-		if (tensor.stride > 16) {
-			store_strided(data, acc1, acc2, acc3, acc4, tensor.stride)
-		} else {
-			store(data, acc1, acc2, acc3, acc4)
-		}
-	}
+    let load_a = @|fragment_tensor : Tensor[a_element_type]| {
+        spirv_matrix_load[alchemist_mat_a_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
 
-	match tensor.addr_mode {
-		AddrMode::RowMajor => select_store(store_row, store_row_stride),
-		AddrMode::ColMajor => select_store(store_col, store_col_stride)
-	}
-};
+    let load_b = @|fragment_tensor : Tensor[b_element_type]| {
+        spirv_matrix_load[alchemist_mat_b_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
 
-fn @nvvm_create_wmma(tile_size_k: i32) -> WMMA {
-    let mut t_a : nvvm_mat_datatype;
-    let mut t_b : nvvm_mat_datatype;
-    let mut acc : nvvm_acc_datatype;
+    let load_c = @|fragment_tensor : Tensor[c_element_type]| {
+        spirv_matrix_load[alchemist_acc_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
 
-    let mut m_a : AddrMode;
-    let mut m_b : AddrMode;
+    let wmma = @|a_fragment : alchemist_mat_a_datatype, b_fragment : alchemist_mat_b_datatype, acc_fragment : alchemist_acc_datatype| {
+        spirv_matrix_mad[alchemist_mat_a_datatype, alchemist_mat_b_datatype, alchemist_acc_datatype](a_fragment, b_fragment, acc_fragment)
+    };
 
-	let load_a = wmma_load_expand[a_element_type, nvvm_mat_datatype](
-		nvvm_wmma_load_a_row, nvvm_wmma_load_a_row_stride,
-		nvvm_wmma_load_a_col, nvvm_wmma_load_a_col_stride
-	);
-	let load_b = wmma_load_expand[b_element_type, nvvm_mat_datatype](
-		nvvm_wmma_load_b_row, nvvm_wmma_load_b_row_stride,
-		nvvm_wmma_load_b_col, nvvm_wmma_load_b_col_stride
-	);
-	let load_c = wmma_load_expand[c_element_type, nvvm_acc_datatype](
-		nvvm_wmma_load_c_row, nvvm_wmma_load_c_row_stride,
-		nvvm_wmma_load_c_col, nvvm_wmma_load_c_col_stride
-	);
-	let store_d = wmma_store_expand[c_element_type](
-		nvvm_wmma_store_d_row, nvvm_wmma_store_d_row_stride,
-		nvvm_wmma_store_d_col, nvvm_wmma_store_d_col_stride
-	);
+    let store_d = @|fragment_tensor : Tensor[c_element_type], acc_fragment : alchemist_acc_datatype| {
+        spirv_matrix_store[alchemist_acc_datatype](bitcast[&mut [u8]](fragment_tensor.data), acc_fragment, spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
 
-	// TODO: this support f16 only / need to map different load&store for f32 support
+    // TODO: this support f16 only / need to map different load&store for f32 support
     WMMA {
         tile_size_k = tile_size_k,
-             load_a = @|a| { t_a = load_a(a); m_a = a.addr_mode; },
-             load_b = @|b| { t_b = load_b(b); m_b = b.addr_mode; },
-             load_c = @|c| { acc = load_c(c); },
-               wmma = @||  { acc = nvvm_wmma_expand(t_a, t_b, acc, m_a, m_b); },
-            store_d = @|d| { store_d(d, acc); },
+        load_a = @|a| { t_a = load_a(a); },
+        load_b = @|b| { t_b = load_b(b); },
+        load_c = @|c| { acc = load_c(c); },
+        wmma = @||  { acc = wmma(t_a, t_b, acc); },
+        store_d = @|d| { store_d(d, acc); },
     }
 }
 
-*/
+
+type_ext battlemage_acc_datatype   = { "OpTypeCooperativeMatrixKHR", "float", "3", "16", "16", "2", "SPV_KHR_cooperative_matrix" };
+type_ext battlemage_mat_a_datatype = { "OpTypeCooperativeMatrixKHR",  "half", "3", "16", "16", "0", "SPV_KHR_cooperative_matrix" };
+type_ext battlemage_mat_b_datatype = { "OpTypeCooperativeMatrixKHR",  "half", "3", "16", "16", "1", "SPV_KHR_cooperative_matrix" };
+
+fn @battlemage_create_wmma(tile_size_k: i32) -> WMMA {
+    let mut t_a : battlemage_mat_a_datatype;
+    let mut t_b : battlemage_mat_b_datatype;
+    let mut acc : battlemage_acc_datatype;
+
+    let load_a = @|fragment_tensor : Tensor[a_element_type]| {
+        spirv_matrix_load[battlemage_mat_a_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
+
+    let load_b = @|fragment_tensor : Tensor[b_element_type]| {
+        spirv_matrix_load[battlemage_mat_b_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
+
+    let load_c = @|fragment_tensor : Tensor[c_element_type]| {
+        spirv_matrix_load[battlemage_acc_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
+
+    let wmma = @|a_fragment : battlemage_mat_a_datatype, b_fragment : battlemage_mat_b_datatype, acc_fragment : battlemage_acc_datatype| {
+        spirv_matrix_mad[battlemage_mat_a_datatype, battlemage_mat_b_datatype, battlemage_acc_datatype](a_fragment, b_fragment, acc_fragment)
+    };
+
+    let store_d = @|fragment_tensor : Tensor[c_element_type], acc_fragment : battlemage_acc_datatype| {
+        spirv_matrix_store[battlemage_acc_datatype](bitcast[&mut [u8]](fragment_tensor.data), acc_fragment, spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
+
+    // TODO: this support f16 only / need to map different load&store for f32 support
+    WMMA {
+        tile_size_k = tile_size_k,
+        load_a = @|a| { t_a = load_a(a); },
+        load_b = @|b| { t_b = load_b(b); },
+        load_c = @|c| { acc = load_c(c); },
+        wmma = @||  { acc = wmma(t_a, t_b, acc); },
+        store_d = @|d| { store_d(d, acc); },
+    }
+}

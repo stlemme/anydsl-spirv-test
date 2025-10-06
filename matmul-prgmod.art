@@ -1097,6 +1097,10 @@ fn entry_fn() -> i32 {
     //dev.platform.grid_size(M*N);
     dev.platform.warps_per_block(8);
 
+    //let dev = levelzero_device(0);
+    //dev.platform.grid_size(N * M / (64 * 8) * 32); //warp size is 32, each warp computes 8 tiles containing 64 values.
+    //dev.platform.warps_per_block(8);
+
     // dev : Device
     // platform : generic NVVM
     // opt : generic NVVMOptions
