@@ -231,38 +231,113 @@ fn @matrix_multiplyAv3(
 
 
 fn @matrix_multiply_prgmod_warp(
-    warp : Group,
-    a_warp_tensor : Tensor[a_element_type],
-    b_warp_tensor : Tensor[b_element_type],
-    c_warp_tensor : Tensor[c_element_type],
-    d_warp_tensor : Tensor[c_element_type]
-) -> () {
+        warp : Group,
+        a_warp_tensor : Tensor[a_element_type],
+        b_warp_tensor : Tensor[b_element_type],
+        c_warp_tensor : Tensor[c_element_type],
+        d_warp_tensor : Tensor[c_element_type]
+        ) -> () {
+    let warp_x_tiles = 2;
+    let warp_y_tiles = 4;
 
     let k = a_warp_tensor.x_dim;
-    let rows_at_a_time = warp.size / tile_size_x;
 
-    for tiled_x in unroll_step(0, d_warp_tensor.x_dim, tile_size_x) {
-        for tiled_y in unroll_step(0, d_warp_tensor.y_dim, tile_size_y) {
-
-            for tidx, _thread in subgroups(warp) {
-                for y_step in range_step(0, tile_size_y, rows_at_a_time) {
-
-                    let x = tiled_x +          tidx % tile_size_x;
-                    let y = tiled_y + y_step + tidx / tile_size_x;
-
-                    let mut rv = tensor_read[f32, c_element_type](x, y, c_warp_tensor);
-
-                    for global_k in range(0, k) {
-                        let av = tensor_read[f32, a_element_type](global_k,        y, a_warp_tensor);
-                        let bv = tensor_read[f32, b_element_type](       x, global_k, b_warp_tensor);
-
-                        rv += av * bv;
+    match warp.intrinsics.wmma {
+            Op[(), WMMA]::Fn(func) => {
+                let mut inner_warp_tensors = @|_tile : i32| -> WMMA {
+                    WMMA {
+                        tile_size_k = 0,
+                         load_a = @|_a| {},
+                         load_b = @|_b| {},
+                         load_c = @|_c| {},
+                           wmma = @||   {},
+                        store_d = @|_d| {},
                     }
+                };
 
-                    tensor_write[f32, c_element_type](x, y, d_warp_tensor, rv);
+                for _tile in unroll(0, warp_x_tiles * warp_y_tiles) {
+                    //let mut acc_fragment : [c_element_type * 256];
+                    //let buffer = bitcast[&mut addrspace(3) [c_element_type]](&acc_fragment(0));
+                    let new_wmma = func();
+
+                    let inner_warp_tensors_nomut = inner_warp_tensors;
+                    inner_warp_tensors = @|tile : i32| -> WMMA {
+                        if tile == 0 { new_wmma } else { inner_warp_tensors_nomut(tile - 1) }
+                    };
+                }
+
+                let inner_warp_tensors_nomut = inner_warp_tensors;
+                let warp_tensors = @|tile_x : i32| { @|tile_y : i32| {
+                    inner_warp_tensors_nomut(tile_x * warp_y_tiles + tile_y)
+                }};
+
+                for tile_x in unroll(0, warp_x_tiles) {
+                    for tile_y in unroll(0, warp_y_tiles) {
+                        let local_x = tile_x * tile_size_x;
+                        let local_y = tile_y * tile_size_y;
+
+                        let c_fragment_tensor = sub_tensor(c_warp_tensor, local_x, local_y, tile_size_x, tile_size_y);
+
+                        warp_tensors(tile_x)(tile_y).load_c(c_fragment_tensor)
+                    }
+                }
+
+                for global_k in range_step(0, k, tile_size_k) {
+                    for tile_x in unroll(0, warp_x_tiles) {
+                        let local_x = tile_x * tile_size_x;
+
+                        let b_fragment_tensor = sub_tensor(b_warp_tensor, local_x, global_k, tile_size_x, tile_size_k);
+
+                        for tile_y in unroll(0, warp_y_tiles) {
+                            let local_y = tile_y * tile_size_y;
+
+                            let a_fragment_tensor = sub_tensor(a_warp_tensor, global_k, local_y, tile_size_k, tile_size_y);
+
+                            warp_tensors(tile_x)(tile_y).load_a(a_fragment_tensor);
+                            warp_tensors(tile_x)(tile_y).load_b(b_fragment_tensor);
+                            warp_tensors(tile_x)(tile_y).wmma();
+                        }
+                    }
+                }
+
+                for tile_x in unroll(0, warp_x_tiles) {
+                    for tile_y in unroll(0, warp_y_tiles) {
+                        let local_x = tile_x * tile_size_x;
+                        let local_y = tile_y * tile_size_y;
+
+                        let d_fragment_tensor = sub_tensor(d_warp_tensor, local_x, local_y, tile_size_x, tile_size_y);
+
+                        warp_tensors(tile_x)(tile_y).store_d(d_fragment_tensor)
+                    }
+                }
+        },
+        _ => {
+            let k = a_warp_tensor.x_dim;
+            let rows_at_a_time = warp.size / tile_size_x;
+
+            for tiled_x in unroll_step(0, d_warp_tensor.x_dim, tile_size_x) {
+                for tiled_y in unroll_step(0, d_warp_tensor.y_dim, tile_size_y) {
+
+                    for tidx, _thread in subgroups(warp) {
+                        for y_step in range_step(0, tile_size_y, rows_at_a_time) {
+
+                            let x = tiled_x +          tidx % tile_size_x;
+                            let y = tiled_y + y_step + tidx / tile_size_x;
+
+                            let mut rv = tensor_read[f32, c_element_type](x, y, c_warp_tensor);
+
+                            for global_k in range(0, k) {
+                                let av = tensor_read[f32, a_element_type](global_k,        y, a_warp_tensor);
+                                let bv = tensor_read[f32, b_element_type](       x, global_k, b_warp_tensor);
+
+                                rv += av * bv;
+                            }
+
+                            tensor_write[f32, c_element_type](x, y, d_warp_tensor, rv);
+                        }
+                    }
                 }
             }
-
         }
     }
 
@@ -302,7 +377,7 @@ fn @matrix_multiplyB(
 
     let matrix_x_warps = matrix_x_tiles / warp_x_tiles;
     let matrix_y_warps = matrix_y_tiles / warp_y_tiles;
-    
+
     let matrix_x_blocks = matrix_x_warps / block_x_warps;
     let matrix_y_blocks = matrix_y_warps / block_y_warps;
 
@@ -321,15 +396,15 @@ fn @matrix_multiplyB(
     pe_info("bs:", bs);
 
     // blocks
-	for pbidx, block in specific_subgroups(group, GroupType::Block) {
-	//for pbidx, block in subgroups(group) {
-
-        for bidx in range_step(pbidx, num/bs, group.num_subgroups) {
-		    // warps
+    for pbidx, block in specific_subgroups(group, GroupType::Block) {
+        //for pbidx, block in subgroups(group) {
+        //TODO: This loop costs significant performance on intel, even if enough threads are present to execute the multiplication in a single iteration.
+        //for bidx in range_step(pbidx, num / bs, group.num_subgroups) {
+            // warps
             for widx, warp in specific_subgroups(block, GroupType::Warp) {
-		    //for widx, warp in subgroups(block) {
+                //for widx, warp in subgroups(block) {
 
-                let linear_widx = bidx * block.num_subgroups + widx;
+                let linear_widx = pbidx * block.num_subgroups + widx;
                 let warp_stride = matrix_x_blocks * block_x_warps;
 
                 let gidx = linear_widx % warp_stride;
@@ -345,7 +420,7 @@ fn @matrix_multiplyB(
 
                 matrix_multiply_prgmod_warp(warp, a_warp_tensor, b_warp_tensor, c_warp_tensor, d_warp_tensor);
             }
-        }
+        //}
     }
 
 }
