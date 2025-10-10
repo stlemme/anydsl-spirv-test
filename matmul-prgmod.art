@@ -1113,7 +1113,7 @@ fn entry_fn() -> i32 {
 
     let acc_matmul = @|a : Tensor[a_element_type], b : Tensor[b_element_type], c : Tensor[c_element_type], d : Tensor[c_element_type]| {
         // nvvm and cpu support
-        //matrix_multiplyAv3(group, a, b, c, d);
+        matrix_multiplyAv2(group, a, b, c, d);
 
         // nvvm support only yet; requires warps_per_block(8) for correct results
         //matrix_multiplyB(group, a, b, c, d);
