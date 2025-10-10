@@ -266,18 +266,22 @@ fn @shared_mem[T](body: fn(Accessor[T])->()) -> fn(Group, i32)->() {
  * Consequently, tile_size_x and tile_size_y have to be lowered to 8!
  */
 
-#[import(cc = "device", name = "spirv.coop_matrix.load")] fn spirv_matrix_load[T](&[u8], i32, i32) -> T;
-#[import(cc = "device", name = "spirv.coop_matrix.mad")] fn spirv_matrix_mad[A, B, C](A, B, C) -> C;
-#[import(cc = "device", name = "spirv.coop_matrix.store")] fn spirv_matrix_store[T](&mut [u8], T, i32, i32) -> ();
-
 fn @spv_match_layout(addr_mode : AddrMode) -> i32 = match addr_mode {
     AddrMode::RowMajor => 0,
     AddrMode::ColMajor => 1
 };
 
-type_ext alchemist_acc_datatype   = { "OpTypeCooperativeMatrixKHR", "float", "3",  "8",  "8", "2", "SPV_KHR_cooperative_matrix" };
-type_ext alchemist_mat_a_datatype = { "OpTypeCooperativeMatrixKHR",  "half", "3",  "8", "16", "0", "SPV_KHR_cooperative_matrix" };
-type_ext alchemist_mat_b_datatype = { "OpTypeCooperativeMatrixKHR",  "half", "3", "16",  "8", "1", "SPV_KHR_cooperative_matrix" };
+type_ext alchemist_acc_datatype   = { "4456", "float", "3",  "8",  "8", "2" };
+type_ext alchemist_mat_a_datatype = { "4456",  "half", "3",  "8", "16", "0" };
+type_ext alchemist_mat_b_datatype = { "4456",  "half", "3", "16",  "8", "1" };
+
+#[import(cc = "device", name = "spirv.operation")] fn spirv_operation[T, S] (i32, T) -> S;
+#[import(cc = "device", name = "spirv.extension")] fn spirv_extension (&[u8]) -> ();
+#[import(cc = "device", name = "spirv.capability")] fn spirv_capability (i32) -> ();
+
+fn @spirv_matrix_load[T](addr : &[u8], layout : i32, stride : i32) = spirv_operation[(&[u8], i32, i32), T](4457, (addr, layout, stride));
+fn @spirv_matrix_store[T](addr : &mut [u8], c : T, layout : i32, stride : i32) = spirv_operation[(&[u8], T, i32, i32), ()](4458, (addr, c, layout, stride));
+fn @spirv_matrix_mad[A, B, C](a : A, b : B, c : C) = spirv_operation[(A, B, C), C](4459, (a, b, c));
 
 fn @alchemist_create_wmma(tile_size_k: i32) -> WMMA {
     let mut t_a : alchemist_mat_a_datatype;
@@ -285,6 +289,9 @@ fn @alchemist_create_wmma(tile_size_k: i32) -> WMMA {
     let mut acc : alchemist_acc_datatype;
 
     let load_a = @|fragment_tensor : Tensor[a_element_type]| {
+        spirv_extension ("SPV_KHR_cooperative_matrix");
+        spirv_capability (6022); //6022 = CooperativeMatrixKHR
+
         spirv_matrix_load[alchemist_mat_a_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
     };
 
@@ -316,9 +323,9 @@ fn @alchemist_create_wmma(tile_size_k: i32) -> WMMA {
 }
 
 
-type_ext battlemage_acc_datatype   = { "OpTypeCooperativeMatrixKHR", "float", "3", "16", "16", "2", "SPV_KHR_cooperative_matrix" };
-type_ext battlemage_mat_a_datatype = { "OpTypeCooperativeMatrixKHR",  "half", "3", "16", "16", "0", "SPV_KHR_cooperative_matrix" };
-type_ext battlemage_mat_b_datatype = { "OpTypeCooperativeMatrixKHR",  "half", "3", "16", "16", "1", "SPV_KHR_cooperative_matrix" };
+type_ext battlemage_acc_datatype   = { "4456", "float", "3", "16", "16", "2" };
+type_ext battlemage_mat_a_datatype = { "4456",  "half", "3", "16", "16", "0" };
+type_ext battlemage_mat_b_datatype = { "4456",  "half", "3", "16", "16", "1" };
 
 fn @battlemage_create_wmma(tile_size_k: i32) -> WMMA {
     let mut t_a : battlemage_mat_a_datatype;
@@ -326,6 +333,9 @@ fn @battlemage_create_wmma(tile_size_k: i32) -> WMMA {
     let mut acc : battlemage_acc_datatype;
 
     let load_a = @|fragment_tensor : Tensor[a_element_type]| {
+        spirv_extension ("SPV_KHR_cooperative_matrix");
+        spirv_capability (6022); //6022 = CooperativeMatrixKHR
+
         spirv_matrix_load[battlemage_mat_a_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
     };
 
