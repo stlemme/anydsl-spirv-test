@@ -230,7 +230,12 @@ int main() {
   //}
   // Snippet end
 
+#if defined(TARGET_INTEL_DG2)
   passed &= test<fp16, fp16, float, 8, 8, 16, class dg2_fp16_8x8x16>();
-
+#elif defined(TARGET_NVIDIA_CUDA)
+  passed &= test<fp16, fp16, float, 16, 16, 16, class nvptx_fp16_16x16x16>();
+#else
+#error "No supported target device selected"
+#endif
   return !passed;
 }
