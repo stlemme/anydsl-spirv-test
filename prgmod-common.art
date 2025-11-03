@@ -32,6 +32,9 @@ struct WMMA {
     load_c: fn(Tensor[c_element_type]) -> (),
     wmma: fn() -> (),
     store_d: fn(Tensor[c_element_type]) -> (),
+
+    set_tile_x: fn(i32) -> () = @|_| {},
+    set_tile_y: fn(i32) -> () = @|_| {},
 }
 
 struct GroupIntrinsics {

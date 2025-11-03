@@ -15,8 +15,93 @@ implicit = LZERO_WMMA_OP[f16] { wmma = Op[(), WMMA]::Generic };
 //static tile_size_k = 16;
 
 implicit = LZERO_WMMA_OP[f32] {
-	wmma = Op[(), WMMA]::Fn(@|| alchemist_create_wmma(tile_size_k))
+	//wmma = Op[(), WMMA]::Fn(@|| alchemist_create_wmma(tile_size_k))
+	wmma = @alchemist_create_wmma_cached(tile_size_k)
 };
+
+fn alchemist_create_wmma_cached (tile_size_k : i32) -> Op[(), WMMA] {
+    let num_a_tiles = 4; //TODO: be abstract over these!
+    let num_b_tiles = 2; //TODO: In theory, these are not live at the same time, at least the way matmul is implemented right now.
+
+
+    let mut tile_a_select = @|x : i32| {
+        bitcast[&mut alchemist_mat_a_datatype](0)
+    };
+
+    for _tile in unroll(0, num_a_tiles) {
+        let mut t_a : alchemist_mat_a_datatype;
+
+        let tile_select_nomut = tile_a_select;
+        let new_tile_a_select = @|x : i32| {
+            if (x == 0) { &mut t_a } else { tile_select_nomut(x - 1) }
+        };
+        tile_a_select = new_tile_a_select;
+    }
+
+
+    let mut tile_b_select = @|x : i32| {
+        bitcast[&mut alchemist_mat_b_datatype](0)
+    };
+
+    for _tile in unroll(0, num_b_tiles) {
+        let mut t_b : alchemist_mat_b_datatype;
+
+        let tile_select_nomut = tile_b_select;
+        let new_tile_b_select = @|x : i32| {
+            if (x == 0) { &mut t_b } else { tile_select_nomut(x - 1) }
+        };
+        tile_b_select = new_tile_b_select;
+    }
+
+    let t_a = tile_a_select;
+    let t_b = tile_b_select;
+
+    Op[(), WMMA]::Fn(@|| alchemist_create_wmma_inner(tile_size_k, t_a, t_b))
+}
+
+fn @alchemist_create_wmma_inner(tile_size_k: i32, t_a : fn(i32) -> &mut alchemist_mat_a_datatype, t_b : fn(i32) -> &mut alchemist_mat_b_datatype) -> WMMA {
+    let mut acc : alchemist_acc_datatype;
+    let mut tile_x = 0 : i32;
+    let mut tile_y = 0 : i32;
+
+    let load_a = @|fragment_tensor : Tensor[a_element_type]| {
+        spirv_matrix_load[alchemist_mat_a_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
+
+    let load_b = @|fragment_tensor : Tensor[b_element_type]| {
+        spirv_matrix_load[alchemist_mat_b_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
+
+    let load_c = @|fragment_tensor : Tensor[c_element_type]| {
+        spirv_matrix_load[alchemist_acc_datatype](bitcast[&[u8]](fragment_tensor.data), spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
+
+    let wmma = @|a_fragment : alchemist_mat_a_datatype, b_fragment : alchemist_mat_b_datatype, acc_fragment : alchemist_acc_datatype| {
+        spirv_extension ("SPV_KHR_cooperative_matrix");
+        spirv_capability (6022); //6022 = CooperativeMatrixKHR
+
+        spirv_matrix_mad[alchemist_mat_a_datatype, alchemist_mat_b_datatype, alchemist_acc_datatype](a_fragment, b_fragment, acc_fragment)
+    };
+
+    let store_d = @|fragment_tensor : Tensor[c_element_type], acc_fragment : alchemist_acc_datatype| {
+        spirv_matrix_store[alchemist_acc_datatype](bitcast[&mut [u8]](fragment_tensor.data), acc_fragment, spv_match_layout(fragment_tensor.addr_mode), fragment_tensor.stride)
+    };
+
+    let set_tile_x = @|new_tile_x: i32| { tile_x = new_tile_x; };
+    let set_tile_y = @|new_tile_y: i32| { tile_y = new_tile_y; };
+
+    WMMA {
+        tile_size_k = tile_size_k,
+        load_a = @|a| { if(tile_x == 0) { *t_a(tile_y) = load_a(a); }},
+        load_b = @|b| { if(tile_y == 0) { *t_b(tile_x) = load_b(b); }},
+        load_c = @|c| { acc = load_c(c); },
+        wmma = @||  { acc = wmma(*t_a(tile_y), *t_b(tile_x), acc); },
+        store_d = @|d| { store_d(d, acc); },
+
+        set_tile_x = set_tile_x,
+        set_tile_y = set_tile_y,
+    }
+}
 
 fn ze_warp_intrinsics(tile_size_k: i32, implicit wmma_op : LZERO_WMMA_OP[c_element_type]) = GroupIntrinsics {
 	//barrier_any = Op[Accessor[u8],  u8]::Fn(nvvm_warp_barrier_any),

@@ -10,7 +10,7 @@ struct WMMA_OP[T] {
 
 implicit = WMMA_OP[f64] { wmma = Op[(), WMMA]::Generic };
 
-static tile_size_k = 16;
+//static tile_size_k = 16;
 
 implicit = WMMA_OP[f16] {
 	wmma = Op[(), WMMA]::Fn(@|| nvvm_create_wmma_f16(tile_size_k))

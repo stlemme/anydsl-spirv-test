@@ -25,9 +25,9 @@ static clayout = AddrMode::RowMajor;
 
 
 
-static tile_size_x = 16;
-static tile_size_y = 16;
-//static tile_size_k = 16;
+static tile_size_x = 8;
+static tile_size_y = 8;
+static tile_size_k = 16;
 
 
 fn @matrix_multiplyA(
@@ -682,9 +682,9 @@ fn @matrix_multiplyD(
                             let c_fragment_tensor = sub_tensor(c_block_tensor, block_x, block_y, tile_size_x, tile_size_y);
                             let d_fragment_tensor = sub_tensor(d_block_tensor, block_x, block_y, tile_size_x, tile_size_y);
 
-                            if global_k + local_k == 0 {
+                            /*if global_k + local_k == 0 {
                                 copy_single_tile(warp, c_fragment_tensor, d_fragment_tensor)
-                            }
+                            }*/
 
                             //let acc_fragment_tensor = d_fragment_tensor;
                             //let acc_fragment = *acc_fragments(tile_x)(tile_y);
@@ -692,6 +692,9 @@ fn @matrix_multiplyD(
                             //let a_fragment_tensor = sub_tensor(a_local_tensor, local_k, block_y, tile_size_k, tile_size_y);
                             let a_fragment_tensor = sub_tensor(a_warp_tensor, local_k, local_y, tile_size_k, tile_size_y);
                             let b_fragment_tensor = sub_tensor(b_warp_tensor, local_x, local_k, tile_size_x, tile_size_k);
+
+                            warp_tensors(tile_x)(tile_y).set_tile_x(tile_x);
+                            warp_tensors(tile_x)(tile_y).set_tile_y(tile_y);
 
                             //if (tile_x == 0) {
                             // *a_fragments(tile_y) = ops.load_a(a_fragment_tensor);
@@ -1168,13 +1171,13 @@ fn entry_fn() -> i32 {
     //dev.platform.vectorize(4);
     //dev.platform.unroll(4);
 
-    let dev = nvvm_device(0);
-    dev.platform.grid_size(N * M / (256 * 8) * 32); //warp size is 32, each warp computes 8 tiles containing 64 values.
-    dev.platform.warps_per_block(8);
-
-    //let dev = levelzero_device(0);
-    //dev.platform.grid_size(N * M / (64 * 8) * 32); //warp size is 32, each warp computes 8 tiles containing 64 values.
+    //let dev = nvvm_device(0);
+    //dev.platform.grid_size(N * M / (256 * 8) * 32); //warp size is 32, each warp computes 8 tiles containing 64 values.
     //dev.platform.warps_per_block(8);
+
+    let dev = levelzero_device(0);
+    dev.platform.grid_size(N * M / (64 * 8) * 32); //warp size is 32, each warp computes 8 tiles containing 64 values.
+    dev.platform.warps_per_block(8);
 
     // dev : Device
     // platform : generic NVVM
@@ -1188,7 +1191,7 @@ fn entry_fn() -> i32 {
 
     let acc_matmul = @|a : Tensor[a_element_type], b : Tensor[b_element_type], c : Tensor[c_element_type], d : Tensor[c_element_type]| {
         // nvvm and cpu support
-        matrix_multiplyAv2(group, a, b, c, d);
+        //matrix_multiplyAv2(group, a, b, c, d);
 
         // nvvm support only yet; requires warps_per_block(8) for correct results
         //matrix_multiplyB(group, a, b, c, d);
