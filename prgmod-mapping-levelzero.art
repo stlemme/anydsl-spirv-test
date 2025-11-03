@@ -356,9 +356,9 @@ fn @spv_match_layout(addr_mode : AddrMode) -> i32 = match addr_mode {
     AddrMode::ColMajor => 1
 };
 
-type_ext alchemist_acc_datatype   = { "4456", "float", "3",  "8",  "8", "2" };
-type_ext alchemist_mat_a_datatype = { "4456",  "half", "3",  "8", "16", "0" };
-type_ext alchemist_mat_b_datatype = { "4456",  "half", "3", "16",  "8", "1" };
+type_ext alchemist_acc_datatype   = "spirv" { "4456", "float", "3",  "8",  "8", "2" };
+type_ext alchemist_mat_a_datatype = "spirv" { "4456",  "half", "3",  "8", "16", "0" };
+type_ext alchemist_mat_b_datatype = "spirv" { "4456",  "half", "3", "16",  "8", "1" };
 
 #[import(cc = "device", name = "spirv.operation")] fn spirv_operation[T, S] (i32, T) -> S;
 #[import(cc = "device", name = "spirv.extension")] fn spirv_extension (&[u8]) -> ();
@@ -408,9 +408,9 @@ fn @alchemist_create_wmma(tile_size_k: i32) -> WMMA {
 }
 
 
-type_ext battlemage_acc_datatype   = { "4456", "float", "3", "16", "16", "2" };
-type_ext battlemage_mat_a_datatype = { "4456",  "half", "3", "16", "16", "0" };
-type_ext battlemage_mat_b_datatype = { "4456",  "half", "3", "16", "16", "1" };
+type_ext battlemage_acc_datatype   = "spirv" { "4456", "float", "3", "16", "16", "2" };
+type_ext battlemage_mat_a_datatype = "spirv" { "4456",  "half", "3", "16", "16", "0" };
+type_ext battlemage_mat_b_datatype = "spirv" { "4456",  "half", "3", "16", "16", "1" };
 
 fn @battlemage_create_wmma(tile_size_k: i32) -> WMMA {
     let mut t_a : battlemage_mat_a_datatype;
