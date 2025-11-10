@@ -12,7 +12,8 @@
 #for N in {64,128,256,512,768,1024,1280,1536,1792,2048,2560,3072,3584,4096,4608,5120,5632,6144,6656,7168,7680,8192}; do
 #for N in {128,256,512,1024,2048,4096,8192}; do
 for N in 4096; do
-    icpx -fsycl -fsycl-targets=spir64_gen -DTARGET_INTEL_DG2 -o joint-matrix-${N} -Xsycl-target-backend "-device dg2 -internal_options -ze-opt-large-register-file" joint-matrix.cpp -DN_PARAM=${N}
+    #icpx -fsycl -fsycl-targets=spir64_gen -DTARGET_INTEL_DG2 -o joint-matrix-${N} -Xsycl-target-backend "-device dg2 -internal_options -ze-opt-large-register-file" joint-matrix.cpp -DN_PARAM=${N}
+    icpx -fsycl -fsycl-targets=spir64_gen -DTARGET_INTEL_DG2 -o joint-matrix-${N} -Xsycl-target-backend "-device dg2 -internal_options -ze-opt-large-register-file" gemm_usm.cpp -DN_PARAM=${N} -L${MKLROOT}/lib/intel64 -lmkl_sycl -lmkl_intel_ilp64 -lmkl_tbb_thread -lmkl_core -lsycl -lOpenCL -lpthread -ldl -lm
 
     ONEAPI_DEVICE_SELECTOR=level_zero:1 ./joint-matrix-${N}
     ONEAPI_DEVICE_SELECTOR=level_zero:1 ./joint-matrix-${N}
